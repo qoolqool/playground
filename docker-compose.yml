@@ -1,0 +1,18 @@
+services:
+  tooling:
+    build:
+      context: ./tooling
+      dockerfile: Dockerfile
+    container_name: tooling
+    tty: true
+    stdin_open: true
+    working_dir: /project
+    volumes:
+      - ./:/project
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=Asia/Kuala_Lumpur
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

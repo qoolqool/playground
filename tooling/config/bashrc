@@ -1,0 +1,19 @@
+export EDITOR=nvim
+export VISUAL=nvim
+alias ll='ls -lah'
+alias gs='git status'
+alias dps='docker ps'
+alias dcu='docker compose up -d'
+alias dcd='docker compose down'
+alias dcl='docker compose logs -f'
+eval "$(starship init bash)"
+HISTCONTROL=ignoreboth
+HISTSIZE=10000
+
+# Ollama host model access (GPU models on host machine)
+# Default: container ollama (cloud model via `ollama launch claude`)
+# Use `ollama-local` to reach host's Ollama for local model inference
+export OLLAMA_LOCAL_HOST=http://host.docker.internal:11434
+ollama-local() {
+    OLLAMA_HOST="$OLLAMA_LOCAL_HOST" ollama "$@"
+}

@@ -1,0 +1,8 @@
+*.sock
+data/
+*.log
+logs/
+.vscode/
+*.swp
+DEBUG_STATE.md
+tarball/

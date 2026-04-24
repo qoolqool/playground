@@ -1,0 +1,7 @@
+[user]
+    name = Developer
+    email = dev@example.com
+[init]
+    defaultBranch = main
+[push]
+    default = simple
