@@ -5,7 +5,7 @@ for Podman
 
 - Podman REST API exposed on TCP 2375 inside the VM (persistent system unit)
  
- 
+``` 
 podman machine ssh -- "sudo tee /etc/systemd/system/podman-tcp.service > /dev/null << 'EOF'
 [Unit]
 Description=Podman REST API (TCP 2375)
@@ -21,7 +21,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now podman-tcp.service"
 # Verify
 podman machine ssh "ss -tlnp | grep 2375"
- 
+```
  
 
 ### 3. Find the Podman VM IP and set `PODMAN_VM_IP`
