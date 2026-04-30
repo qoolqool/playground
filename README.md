@@ -10,6 +10,8 @@ A containerized development environment for vibe coding with AI agents, supporti
 ./start.sh -f        # Force rebuild
 ```
 
+> **Using Podman on macOS?** See [PODMAN.md](PODMAN.md) for setup instructions — you'll need to configure the Podman REST API and set `PODMAN_VM_IP`.
+
 ## Dual Model Support
 
 The playground supports two model sources:
