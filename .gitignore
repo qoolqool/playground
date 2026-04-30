@@ -6,3 +6,7 @@ logs/
 *.swp
 DEBUG_STATE.md
 tarball/
+
+# Scratch notes
+memory/
+README1.md
