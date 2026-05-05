@@ -1,7 +1,7 @@
 services:
   tooling:
     build:
-      context: ./tooling
+      context: ./tooling-docker
       dockerfile: Dockerfile
     container_name: tooling
     tty: true

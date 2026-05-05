@@ -1,0 +1,378 @@
+" ============================================================================
+" NEOVIM CONFIGURATION - Data Engineering Optimized
+" ============================================================================
+
+" ============================================================================
+" 1. VIM-PLUG BOOTSTRAP & PLUGIN DECLARATIONS
+" ============================================================================
+
+" Install vim-plug if not present
+if empty(glob('~/.config/nvim/autoload/plug.vim'))
+  silent !curl -fLo ~/.config/nvim/autoload/plug.vim --create-dirs
+    \ https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
+  autocmd VimEnter * PlugInstall --sync | source $MYVIMRC
+endif
+
+" Initialize vim-plug
+call plug#begin('~/.config/nvim/plugged')
+
+" ---- Language Server & Completion ----
+Plug 'neoclide/coc.nvim', {'branch': 'release'}
+
+" ---- File Navigation ----
+Plug 'preservim/nerdtree'
+Plug 'Xuyuanp/nerdtree-git-plugin'
+Plug 'ctrlpvim/ctrlp.vim'
+Plug 'vim-airline/vim-airline'
+Plug 'vim-airline/vim-airline-themes'
+Plug 'kshenoy/vim-signature'           " Show marks in margin
+
+" ---- Git Integration ----
+Plug 'tpope/vim-fugitive'
+Plug 'airblade/vim-gitgutter'
+Plug 'tpope/vim-rhubarb'  " GitHub integration for fugitive
+
+" ---- UI/Visual Enhancements ----
+Plug 'morhetz/gruvbox'
+
+" ---- Editing & Text Objects ----
+Plug 'tpope/vim-commentary'
+Plug 'tpope/vim-surround'  " Better text object manipulation
+Plug 'michaeljsmith/vim-indent-object'
+Plug 'jiangmiao/auto-pairs'
+
+" ---- Syntax & Highlighting ----
+Plug 'sheerun/vim-polyglot'
+
+" ---- Markdown Support ----
+Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
+Plug 'nvim-tree/nvim-web-devicons'
+Plug 'MeanderingProgrammer/render-markdown.nvim'
+
+call plug#end()
+
+" ============================================================================
+" 2. BASIC EDITOR SETTINGS
+" ============================================================================
+
+set number              " Show line numbers
+set relativenumber      " Relative line numbers for faster navigation
+set expandtab           " Use spaces instead of tabs
+set tabstop=4           " Tab width
+set shiftwidth=4        " Indent width
+set softtabstop=4       " Soft tab stop
+set autoindent          " Auto indent
+set smartindent         " Smart indent
+set mouse=a             " Enable mouse support
+set clipboard=unnamedplus " Use system clipboard
+set ignorecase          " Ignore case in search
+set smartcase           " Unless uppercase in search
+set incsearch           " Incremental search
+set hlsearch            " Highlight search results
+set cursorline          " Highlight current line
+set wrap                " Wrap lines
+set breakindent         " Wrapped lines maintain indentation
+set encoding=utf-8      " UTF-8 encoding
+set fileencoding=utf-8
+" nocompatible is always set in Neovim; no need to set it
+set hidden              " Required for coc.nvim
+set nobackup            " Some servers have issues with backup files
+set nowritebackup
+set cmdheight=2         " Give more space for displaying messages
+set updatetime=100      " Faster completion & git signs (lowered from 300)
+set shortmess+=c        " Don't pass messages to ins-completion-menu
+set conceallevel=0      " Disable conceal for markdown tables (0 = show all)
+set background=dark
+set termguicolors       " Enable true color support
+set signcolumn=yes      " Always show sign column (for git/errors)
+
+filetype plugin indent on
+syntax enable
+
+" ============================================================================
+" 3. COLOR SCHEME
+" ============================================================================
+
+silent! colorscheme gruvbox
+
+" ============================================================================
+" 4. PLUGIN CONFIGURATION
+" ============================================================================
+
+" ---- NERDTree ----
+if exists("g:loaded_nerd_tree")
+  let NERDTreeShowHidden=1
+  let NERDTreeIgnore=['\.git$', '\.pyc$', '__pycache__', 'node_modules', '\.egg-info', '\.pytest_cache']
+  let NERDTreeMinimalUI=1
+  let NERDTreeDirArrows=1
+  let NERDTreeWinSize=30
+  let NERDTreeQuitOnOpen=1  " AUTO-CLOSE after opening file (KEY FIX!)
+  let NERDTreeAutoDeleteBuffer=1  " Delete buffer when deleting file in tree
+  
+  " Auto start NERDTree if no files specified
+  autocmd StdinReadPre * let s:std_in=1
+  autocmd VimEnter * if argc() == 0 && !exists("s:std_in") | NERDTree | wincmd p | endif
+  
+  " Auto start NERDTree when opening a directory
+  autocmd VimEnter * if argc() == 1 && isdirectory(argv()[0]) && !exists("s:std_in") | exe 'NERDTree' argv()[0] | wincmd p | endif
+  
+  " Close vim if NERDTree is the only window left
+  autocmd BufEnter * if winnr('$') == 1 && exists('b:NERDTree') && b:NERDTree.isTabTree() | quit | endif
+endif
+
+" ---- Airline (Status line) ----
+if exists("g:loaded_airline")
+  let g:airline#extensions#tabline#enabled = 1
+  let g:airline#extensions#tabline#tab_nr_type = 1  " Show buffer numbers
+  let g:airline#extensions#tabline#buffer_nr_show = 1  " Always show buffer numbers
+  let g:airline_powerline_fonts = 0
+  let g:airline_theme='gruvbox'
+  let g:airline#extensions#coc#enabled = 1
+  let g:airline#extensions#whitespace#enabled = 0
+  let g:airline#extensions#tabline#formatter = 'unique_tail_improved'  " Better path display
+endif
+
+" ---- Git Gutter ----
+let g:gitgutter_enabled = 1
+let g:gitgutter_sign_added = '▌'
+let g:gitgutter_sign_modified = '▌'
+let g:gitgutter_sign_removed = '▌'
+highlight GitGutterAdd ctermfg=2 guifg=#87af87
+highlight GitGutterChange ctermfg=3 guifg=#d7af5f
+highlight GitGutterDelete ctermfg=1 guifg=#d75f5f
+
+" ---- CtrlP ----
+let g:ctrlp_max_files = 0
+let g:ctrlp_max_depth = 5
+let g:ctrlp_custom_ignore = 'node_modules\|\.git\|__pycache__\|\.egg-info\|\.pytest_cache\|build\|dist'
+
+" ============================================================================
+" 5. COC (CONQUER OF COMPLETION) CONFIGURATION
+" ============================================================================
+
+" Use tab for trigger completion with characters ahead and navigate
+inoremap <silent><expr> <TAB>
+      \ coc#pum#visible() ? coc#pum#next(1) :
+      \ CheckBackspace() ? "\<Tab>" :
+      \ coc#refresh()
+inoremap <expr><S-TAB> coc#pum#visible() ? coc#pum#prev(1) : "\<C-h>"
+
+" Make <CR> to accept selected completion item
+inoremap <silent><expr> <CR> coc#pum#visible() ? coc#pum#confirm()
+                              \: "\<C-g>u\<CR>\<c-r>=coc#on_enter()\<CR>"
+
+function! CheckBackspace() abort
+  let col = col('.') - 1
+  return !col || getline('.')[col - 1]  =~# '\s'
+endfunction
+
+" Use <c-space> to trigger completion
+if has('nvim')
+  inoremap <silent><expr> <c-space> coc#refresh()
+else
+  inoremap <silent><expr> <c-@> coc#refresh()
+endif
+
+" GoTo code navigation
+nmap <silent> gd <Plug>(coc-definition)
+nmap <silent> gy <Plug>(coc-type-definition)
+nmap <silent> gi <Plug>(coc-implementation)
+nmap <silent> gr <Plug>(coc-references)
+
+" Use K to show documentation in preview window
+nnoremap <silent> K :call ShowDocumentation()<CR>
+
+function! ShowDocumentation()
+  if CocAction('hasProvider', 'hover')
+    call CocActionAsync('doHover')
+  else
+    call feedkeys('K', 'in')
+  endif
+endfunction
+
+" Highlight the symbol and its references when holding the cursor
+autocmd CursorHold * silent call CocActionAsync('highlight')
+
+" Symbol renaming
+nmap <leader>rn <Plug>(coc-rename)
+
+" Formatting selected code
+xmap <leader>f  <Plug>(coc-format-selected)
+nmap <leader>f  <Plug>(coc-format-selected)
+
+" ============================================================================
+" 6. KEY MAPPINGS - OPTIMIZED FOR FAST NAVIGATION
+" ============================================================================
+
+" ---- QUICK FILE OPERATIONS ----
+" Toggle NERDTree (stays closed, opens/closes on demand)
+nnoremap <C-n> :NERDTreeToggle<CR>
+" Reveal current file in NERDTree
+nnoremap <C-f> :NERDTreeFind<CR>
+" Fuzzy find files
+nnoremap <C-p> :CtrlP<CR>
+" Fuzzy find in buffer history
+nnoremap <C-b> :CtrlPBuffer<CR>
+
+" ---- FAST BUFFER NAVIGATION (CORE WORKFLOW) ----
+" Jump to buffer by number (1-9) - mapped to <leader>1 through <leader>9
+for i in range(1, 9)
+  execute 'nnoremap <leader>' . i . ' :b' . i . '<CR>'
+  execute 'nnoremap <leader><leader>' . i . ' :' . i . 'wincmd b<CR>'
+endfor
+
+" Navigate between buffers
+nnoremap <leader>bn :bnext<CR>
+nnoremap <leader>bp :bprevious<CR>
+" Jump to last used buffer (very fast for toggling)
+nnoremap <leader><Tab> :b#<CR>
+" Close current buffer (keep window)
+nnoremap <leader>bd :bdelete<CR>
+" Close all other buffers
+nnoremap <leader>ba :%bd!<CR>
+
+" ---- SUPER FAST NAVIGATION: Leader + letter ----
+" Open file/buffer commands
+nnoremap <leader>o :e 
+nnoremap <leader>e :Explore<CR>
+
+" ---- SPLIT MANAGEMENT ----
+" Split and move to new split quickly
+nnoremap <leader>s<Bar> :vsplit<CR><C-w>l
+nnoremap <leader>s- :split<CR><C-w>j
+" Navigate between splits (same as C-hjkl but alternative)
+nnoremap <C-h> <C-w>h
+nnoremap <C-j> <C-w>j
+nnoremap <C-k> <C-w>k
+nnoremap <C-l> <C-w>l
+" Resize splits
+nnoremap <C-Up> <C-w>+
+nnoremap <C-Down> <C-w>-
+nnoremap <C-Left> <C-w><
+nnoremap <C-Right> <C-w>>
+
+" ---- MARKS (BOOKMARK SYSTEM) ----
+" Set mark with leader+m, then jump with `[mark]
+" Examples: <leader>ma sets mark a, then `a jumps to it
+nnoremap <leader>m :marks<CR>
+
+" ---- QUICK SEARCHING & JUMPING ----
+" Search in current file
+nnoremap <leader>/ /
+" Global search and replace
+nnoremap <leader>r :%s/
+" Jump to definition (CoC)
+nnoremap gd <Plug>(coc-definition)
+nnoremap gy <Plug>(coc-type-definition)
+nnoremap gi <Plug>(coc-implementation)
+nnoremap gr <Plug>(coc-references)
+
+" ---- EDITING COMMANDS ----
+" Commenting
+nmap <C-_> gcc
+vmap <C-_> gc
+nmap <C-/> gcc
+vmap <C-/> gc
+
+" ---- GIT COMMANDS (leader g) ----
+nnoremap <leader>gs :Git status<CR>
+nnoremap <leader>gc :Git commit<CR>
+nnoremap <leader>gp :Git push<CR>
+nnoremap <leader>gf :Gfetch<CR>
+nnoremap <leader>gl :Git log<CR>
+nnoremap <leader>gd :Gdiffsplit<CR>
+nnoremap <leader>gb :Git blame<CR>
+
+" ---- UTILITY ----
+" Clear search highlight
+nnoremap <silent> <Esc><Esc> :nohlsearch<CR>
+" Toggle word wrap for markdown
+autocmd FileType markdown nnoremap <buffer> <leader>tw :setlocal wrap!<CR>
+" Toggle relative line numbers (for copying)
+nnoremap <leader>rn :set relativenumber!<CR>
+
+" ============================================================================
+" 7. MARKDOWN CONFIGURATION
+" ============================================================================
+
+" Markdown-specific settings
+autocmd FileType markdown setlocal textwidth=0  " Disable automatic wrapping
+autocmd FileType markdown setlocal nowrap  " Never wrap by default (tables won't align with wrap)
+autocmd FileType markdown setlocal linebreak
+autocmd FileType markdown setlocal nolist
+
+" Key mapping to manually toggle wrap when needed (for prose sections)
+autocmd FileType markdown nnoremap <buffer> <leader>tw :setlocal wrap!<CR>
+
+" ============================================================================
+" 8. NEOVIM LUA CONFIGURATION
+" ============================================================================
+
+lua << EOF
+-- Safely load and configure render-markdown
+local status_rm, render_markdown = pcall(require, 'render-markdown')
+if status_rm then
+  render_markdown.setup({
+    file_types = { 'markdown' },
+    render_modes = { 'n', 'c' },
+    latex = { enabled = false },
+    -- CRITICAL: Disable anti_conceal so tables render properly
+    anti_conceal = { enabled = false },
+    heading = {
+      enabled = true,
+      sign = false,
+      icons = { '# ', '## ', '### ', '#### ', '##### ', '###### ' },
+    },
+    code = {
+      enabled = true,
+      sign = false,
+    },
+    list = {
+      enabled = true,
+      icons = { '● ', '○ ', '■ ', '□ ' },
+    },
+    -- Table rendering - KEY CONFIGURATION
+    table = {
+      enabled = true,
+      preset = 'none',  -- Use plain style for better alignment
+      -- Avoid special characters that might break rendering
+      style = 'normal',
+    },
+    -- Padding configuration for readability
+    indent = {
+      enabled = true,
+      per_level = 2,
+    },
+  })
+end
+
+-- Safely load and configure treesitter (v1.0+ removed the configs module)
+-- Highlighting and indentation are enabled automatically by Neovim
+-- when parsers are installed. Use :TSInstall to add parsers.
+-- Disable treesitter highlighting for markdown (render-markdown handles it).
+vim.api.nvim_create_autocmd('FileType', {
+  pattern = 'markdown',
+  callback = function()
+    vim.treesitter.stop()
+  end,
+})
+EOF
+
+" ============================================================================
+" 9. PERFORMANCE & MISC
+" ============================================================================
+
+" Reduce latency
+set ttimeoutlen=0
+set timeoutlen=1000
+
+" Improve scroll performance
+set lazyredraw
+
+" Session management
+set viewoptions-=options
+set viewoptions+=slash,unix
+
+" Better diff mode
+set diffopt+=algorithm:histogram
+set diffopt+=indent-heuristic
