@@ -10,7 +10,44 @@ A containerized development environment for vibe coding with AI agents, supporti
 ./start.sh -f        # Force rebuild
 ```
 
-> **Using Podman on macOS?** See [PODMAN.md](PODMAN.md) for setup instructions — you'll need to configure the Podman REST API and set `PODMAN_VM_IP`.
+## Dynamic Configuration
+
+`setenv.sh` auto-detects whether you're running **Docker** or **Podman** and sets the correct environment variables (`DOCKER_HOST`, socket path) used by `docker-compose.yml`. It is sourced automatically by `start.sh`.
+
+- **Docker (Linux):** Uses `unix:///var/run/docker.sock` — no setup needed.
+- **Podman (macOS):** Uses `tcp://<VM_IP>:2375`. Set `PODMAN_VM_IP` before running:
+
+  ```bash
+  export PODMAN_VM_IP=192.168.127.2   # or your Podman VM's IP
+  ./start.sh
+  ```
+
+  You can also add the export to your shell profile (`~/.zshrc`, `~/.bashrc`) so it's always available.
+
+> **Podman on macOS?** You'll need a running Podman VM in rootful mode with the REST API exposed on TCP port 2375. See [`setenv.sh`](setenv.sh) for the logic, or check the [Podman docs](https://podman.io/docs) for VM setup.
+
+## Pi Coding Agent
+
+The container comes with [pi](https://pi.dev), a terminal-native coding agent, pre-installed
+along with extensions for persistent memory and knowledge management:
+
+| Feature | What it does | How to use |
+|---------|-------------|------------|
+| **Persistent Memory** | Remembers facts, preferences, and corrections across sessions | `memory_search`, auto-learns from corrections |
+| **Session Search** | Full-text search across all past conversations | `session_search` |
+| **Knowledgebase Vector Search** | Semantic search over decisions, patterns, and session summaries | `/search-kb "<query>"` |
+| **Atlassian Integration** | Search Confluence and Jira from the terminal | `atlassian configure` then `atlassian-cli.py confluence search` |
+| **Skills** | Reusable workflows for the agent (debugging, code review, planning) | Auto-discovered from `tooling/skills/` |
+
+### Quick Setup
+
+```bash
+# Atlassian Confluence/Jira (optional)
+python3 /project/tooling/scripts/atlassian-cli.py configure
+
+# Index past sessions into search (one-time)
+/memory-index-sessions
+```
 
 ## Dual Model Support
 
@@ -18,16 +55,18 @@ The playground supports two model sources:
 
 | Mode | Command | Use case |
 |------|---------|----------|
-| **Cloud** | `ollama launch claude --model <model>:cloud` | Anthropic Claude models via browser auth |
-| **Local** | `ollama-local run <model>` | Local models on host GPU (e.g., gemma4, qwen) |
+| **Cloud** | `ollama launch pi --model <model>:cloud` | Ollama cloud models via browser auth |
+| **Local** | `pi-local <model>` | Local models on host GPU (e.g., gemma4, qwen) |
 
-- **Cloud models** use the container's Ollama server. No API key needed — Claude Code prompts for browser-based authentication on first run.
-- **Local models** run on the host machine's GPU. The container connects to the host's Ollama via `host.docker.internal:11434`. Use `ollama-local` to interact with host models:
+- **Cloud models** use the container's Ollama server. No API key needed — ollama prompts for browser-based authentication on first run.
+- **Local models** run on the host machine's GPU. The container connects to the host's Ollama via `host.docker.internal:11434`. The host IP is auto-detected at startup and available as `$HOST_IP`. Use the `pi-local` helper:
 
 ```bash
-ollama-local list              # List available local models
-ollama-local run gemma4:e4b    # Run a local model
-ollama-local pull <model>      # Pull a new model to host
+pi-local gemma4:e4b          # Launch pi with a local model
+pi-local qwen3:14b           # Any model on your host's Ollama
+
+# Or manually:
+OLLAMA_HOST=$HOST_IP:11434 ollama launch pi --model <model>
 ```
 
 ## Multi-Project Workflow
@@ -51,7 +90,7 @@ cd my-new-project
 
 - Working directory (`/project`) is volume-mounted — files persist on the host
 - Git config, editor settings, and installed plugins live inside the container
-- Claude Code sessions are container-scoped
+- pi sessions are container-scoped
 
 ### What's shared
 
@@ -77,16 +116,16 @@ docker rmi $(docker images -q baseline-tooling)
 │  Tooling Container              │
 │  ┌───────────────────────────┐  │
 │  │ Ollama (container)        │  │  Cloud model broker
-│  │ localhost:11434           │  │  `ollama launch claude`
+│  │ localhost:11434           │  │  `ollama launch pi`
 │  └───────────────────────────┘  │
-│                                  │
+│                                 │
 │  ┌───────────────────────────┐  │
 │  │ Ollama CLI ──────────────────┼──► host.docker.internal:11434
-│  │ (ollama-local)            │  │  Host GPU models
+│  │ pi-local → OLLAMA_HOST    │  │  Host GPU models
 │  └───────────────────────────┘  │
-│                                  │
-│  Neovim · Docker · Claude Code  │
-│  Starship · Git                  │
+│                                 │
+│  Neovim · Docker · pi           │
+│  Starship · Git                 │
 └─────────────────────────────────┘
          │ Docker socket mount
          ▼
@@ -145,7 +184,7 @@ docker compose logs --tail 50
 docker exec -it tooling bash
 
 # Run a one-off command inside the container
-docker exec tooling ollama-local list
+docker exec tooling ollama list    # list cloud models (container's Ollama)
 ```
 
 ### Volumes and cleanup
@@ -164,10 +203,10 @@ docker system prune -a
 ## Included Tools
 
 - **Ollama** — Model launcher (cloud + local)
-- **Claude Code** — AI coding agent (`claude`)
 - **Neovim** — Lazy.nvim config with LSP, Telescope, Treesitter, nvim-tree, markdown preview, Mermaid
 - **Docker CLI + Compose** — Socket-mounted from host
 - **Starship** — Custom prompt
+- **Pi** — AI coding agent with memory + session search + skill system
 - **Node.js / npm, Python, Chromium** — Runtime support
 
 ## Keybinds
@@ -187,12 +226,19 @@ After changing `tooling/Dockerfile` or configs under `tooling/`:
 ```
 .
 ├── start.sh                 # Container lifecycle script
+├── setenv.sh                # Dynamic env config (Docker vs Podman)
 ├── docker-compose.yml       # Container definition
 ├── apps/                    # Deployed app targets
 ├── scripts/                 # Custom scripts
 └── tooling/
     ├── Dockerfile           # Image build (alpine/ollama base)
-    ├── entrypoint.sh        # First-run setup + health checks
+    ├── entrypoint-wrapper.sh # First-run setup + health checks
     ├── config/              # Dotfiles (bashrc, nvim, starship, git)
-    └── skills/              # Claude Code skills (deploy-app)
+    ├── scripts/             # Utility scripts (atlassian-cli, vector search, etc.)
+    ├── skill-marketplace/   # Bundled pi skills
+    └── skills/              # pi skills (atlassian etc.)
+
+## Documentation
+
+- [docs/atlassian-setup.md](docs/atlassian-setup.md) — Setting up Confluence and Jira integration
 ```

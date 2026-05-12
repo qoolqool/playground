@@ -10,4 +10,9 @@ knowledgebase/
 app*/
 # Scratch notes
 memory/
-README1.md
+.pi/
+.claude/
+docs/
+cloudflare.pem
+Dockerfile.cloudflare
+**/__pycache__/

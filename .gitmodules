@@ -1,0 +1,3 @@
+[submodule "tooling/skill-marketplace"]
+	path = tooling/skill-marketplace
+	url = https://github.com/qoolqool/skills.git

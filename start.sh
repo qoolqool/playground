@@ -2,6 +2,11 @@
 set -e
 cd "$(dirname "$0")"
 
+# Source dynamic env config (auto-detects Docker vs Podman)
+if [ -f ./setenv.sh ]; then
+  source ./setenv.sh
+fi
+
 # Parse arguments
 FORCE_REBUILD=false
 while [[ $# -gt 0 ]]; do
