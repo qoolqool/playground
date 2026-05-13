@@ -26,10 +26,18 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Pull embedding model for knowledgebase vector search (small ~33MB)
-if ! curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any('bge-large' in m['name'] for m in d.get('models',[])) else 1)" 2>/dev/null; then
-  echo "Pulling bge-large embedding model (~670MB)..."
-  ollama pull bge-large:latest &
+# Pull embedding model ONLY if graphify is not available (vector DB fallback path).
+# Graphify is the preferred knowledgebase search backend and does not need bge-large.
+# See DECISION#2026-05-13#007.
+if ! python3 -c "import graphify" 2>/dev/null || [ ! -f /project/graphify-out/graph.json ]; then
+  if ! curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any('bge-large' in m['name'] for m in d.get('models',[])) else 1)" 2>/dev/null; then
+    echo "Graphify not available — pulling bge-large embedding model for vector DB fallback (~670MB)..."
+    ollama pull bge-large:latest &
+  else
+    echo "bge-large already pulled (vector DB fallback available)"
+  fi
+else
+  echo "Graphify available — skipping bge-large pull (not needed for graph-based search)"
 fi
 
 

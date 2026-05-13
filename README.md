@@ -35,18 +35,35 @@ along with extensions for persistent memory and knowledge management:
 |---------|-------------|------------|
 | **Persistent Memory** | Remembers facts, preferences, and corrections across sessions | `memory_search`, auto-learns from corrections |
 | **Session Search** | Full-text search across all past conversations | `session_search` |
-| **Knowledgebase Vector Search** | Semantic search over decisions, patterns, and session summaries | `/search-kb "<query>"` |
+| **Knowledge Graph** | Structural knowledge graph from code, docs, decisions, patterns — entities, relationships, communities | `/graphify .` then `/graphify query`, `/graphify explain`, `/graphify path` |
 | **Atlassian Integration** | Search Confluence and Jira from the terminal | `atlassian configure` then `atlassian-cli.py confluence search` |
 | **Skills** | Reusable workflows for the agent (debugging, code review, planning) | Auto-discovered from `tooling/skills/` |
+
+### Proactive Knowledge Search
+
+The agent is configured (via `.pi/AGENT.md`) to **always search the knowledgebase before starting work**. This prevents re-solving previously solved problems:
+
+- **Structural queries** → `/graphify query`, `/graphify explain`, `/graphify path` — finds relationships, communities, and cross-cutting connections that keyword search misses
+- **Conversational/semantic queries** → `/search-kb` (fallback when graphify is not available) — finds decisions, patterns, and gotchas by semantic similarity
+
+**Graphify is the preferred search method.** It stores relationships, community structure, and full content in one self-contained file. No external model or embedding server needed. The vector DB (`search-kb`) is retained as a fallback for environments without graphify.
 
 ### Quick Setup
 
 ```bash
+# Build a knowledge graph of the project (recommended — graphify is pre-installed)
+/graphify .
+
 # Atlassian Confluence/Jira (optional)
 python3 /project/tooling/scripts/atlassian-cli.py configure
+```
 
-# Index past sessions into search (one-time)
-/memory-index-sessions
+After `/graphify .`, you can query the graph at any time:
+
+```
+/graphify query "what connects Docker to the embedding pipeline"
+/graphify explain "bge-large Embedding Model"
+/graphify path "Lean Container" "Knowledge Pipeline"
 ```
 
 ## Dual Model Support
@@ -126,6 +143,7 @@ docker rmi $(docker images -q baseline-tooling)
 │                                 │
 │  Neovim · Docker · pi           │
 │  Starship · Git                 │
+│  Graphify · distill-and-index   │
 └─────────────────────────────────┘
          │ Docker socket mount
          ▼
@@ -207,11 +225,36 @@ docker system prune -a
 - **Docker CLI + Compose** — Socket-mounted from host
 - **Starship** — Custom prompt
 - **Pi** — AI coding agent with memory + session search + skill system
+- **Graphify** — Knowledge graph builder and query engine (pre-installed)
 - **Node.js / npm, Python, Chromium** — Runtime support
 
 ## Keybinds
 
 See [SHORTCUTS.md](tooling/config/SHORTCUTS.md) for Neovim keymaps.
+
+## Knowledge Tools
+
+| Tool | Purpose | Search Method | Dependencies |
+|------|---------|---------------|-------------|
+| **graphify** ✅ | Structural knowledge graph — entities, relationships, communities, paths | `/graphify query`, `/graphify explain`, `/graphify path` | None (self-contained JSON) |
+| **search-kb** 🔄 | Semantic vector search — cosine similarity over embeddings | `/search-kb "query"` | Ollama + bge-large (~670MB) |
+| **distill-and-index** | Distill conversation → knowledgebase YAML → index | Automatic via `/distill-and-index` | Graphify (preferred) or vector DB |
+
+**Graphify is the preferred search backend.** It provides relationship traversal, community detection, and path queries that vector search cannot. The `distill-and-index` skill auto-detects which indexer is available and uses graphify when present, falling back to the vector DB pipeline when it's not.
+
+**When to use each:**
+- `/graphify query "X"` — "how does X connect to Y?" "what communities overlap?" "what are the cross-cutting patterns?"
+- `/graphify explain "X"` — "tell me everything about X and what surrounds it"
+- `/graphify path "A" "B"` — "trace the shortest connection from A to B"
+- `/search-kb "X"` — (fallback) "find documents semantically similar to X"
+
+### Embedding Model (Vector DB Fallback Only)
+
+The vector DB fallback uses **`bge-large:latest`** (1024-dimensional vectors) via Ollama for embeddings. This model is pulled **only when graphify is not available** — the `entrypoint-wrapper.sh` checks for graphify first and skips the ~670MB download when the knowledge graph is present. Do **not** use `bge-small` (384-dim) — dimension mismatch corrupts the vector index.
+
+### distill-and-index on Pi
+
+On Pi, the `distill-and-index` skill **skips memory file writing** — `pi-hermes-memory` handles that. It only writes knowledgebase YAML files and indexes them via graphify (preferred) or the vector DB. This avoids duplicate/conflicting memory entries.
 
 ## Rebuilding
 
@@ -228,17 +271,35 @@ After changing `tooling/Dockerfile` or configs under `tooling/`:
 ├── start.sh                 # Container lifecycle script
 ├── setenv.sh                # Dynamic env config (Docker vs Podman)
 ├── docker-compose.yml       # Container definition
+├── graphify-out/            # Knowledge graph outputs (auto-generated)
+│   ├── graph.html           # Interactive graph visualization
+│   ├── GRAPH_REPORT.md      # Audit trail report
+│   └── graph.json           # Knowledge graph data
+├── knowledgebase/           # Distilled decisions, patterns, sessions
+│   ├── decisions/           # Architecture decisions with rationale
+│   ├── patterns/            # Implementation patterns and gotchas
+│   ├── sessions/            # Session summaries
+│   └── index.yaml           # Knowledgebase index
 ├── apps/                    # Deployed app targets
 ├── scripts/                 # Custom scripts
 └── tooling/
-    ├── Dockerfile           # Image build (alpine/ollama base)
-    ├── entrypoint-wrapper.sh # First-run setup + health checks
+    ├── Dockerfile           # Image build (debian/ollama base)
+    ├── entrypoint-wrapper.sh # First-run setup (nvim plugins, conditional bge-large pull)
     ├── config/              # Dotfiles (bashrc, nvim, starship, git)
-    ├── scripts/             # Utility scripts (atlassian-cli, vector search, etc.)
-    ├── skill-marketplace/   # Bundled pi skills
-    └── skills/              # pi skills (atlassian etc.)
+    ├── scripts/             # Utility scripts (atlassian-cli, embed-server, vector search)
+    ├── skill-marketplace/   # Bundled pi skills (distill-rag-bridge)
+    └── skills/              # pi skills (atlassian, coo-advisor, etc.)
+```
+
+Additional project-level configs:
+
+| File | Purpose |
+|------|---------|
+| `.pi/AGENT.md` | Agent instructions — always search graph before work |
+| `.pi/settings.json` | Pi project settings |
+| `graphify-out/graph.json` | Knowledge graph — persisted across sessions |
+| `knowledgebase/index.yaml` | Knowledgebase file index |
 
 ## Documentation
 
 - [docs/atlassian-setup.md](docs/atlassian-setup.md) — Setting up Confluence and Jira integration
-```
