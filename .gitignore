@@ -16,3 +16,6 @@ docs/
 cloudflare.pem
 Dockerfile.cloudflare
 **/__pycache__/
+
+# Knowledge graph outputs (generated, not source)
+graphify-out/

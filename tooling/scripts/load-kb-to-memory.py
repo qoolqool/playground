@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Load knowledgebase YAML files into a persistent vector database.
-Uses Ollama bge-small for embeddings + SQLite for storage.
+Uses Ollama bge-large:latest (1024-dim) for embeddings + SQLite for storage.
 No external npm dependencies — uses only Python stdlib + ollama API.
 """
 import json
