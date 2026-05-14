@@ -36,7 +36,7 @@ along with extensions for persistent memory and knowledge management:
 | **Persistent Memory** | Remembers facts, preferences, and corrections across sessions | `memory_search`, auto-learns from corrections |
 | **Session Search** | Full-text search across all past conversations | `session_search` |
 | **Knowledge Graph** | Structural knowledge graph from code, docs, decisions, patterns — entities, relationships, communities | `/graphify .` then `/graphify query`, `/graphify explain`, `/graphify path` |
-| **Atlassian Integration** | Search Confluence and Jira from the terminal | `atlassian configure` then `atlassian-cli.py confluence search` |
+| **Atlassian Integration** | Search Confluence and Jira from the terminal | `atlassian-cli.py configure` then `confluence search` |
 | **Skills** | Reusable workflows for the agent (debugging, code review, planning) | Auto-discovered from `tooling/skills/` |
 
 ### Proactive Knowledge Search
@@ -53,9 +53,6 @@ The agent is configured (via `.pi/AGENT.md`) to **always search the knowledgebas
 ```bash
 # Build a knowledge graph of the project (recommended — graphify is pre-installed)
 /graphify .
-
-# Atlassian Confluence/Jira (optional)
-python3 /project/tooling/scripts/atlassian-cli.py configure
 ```
 
 After `/graphify .`, you can query the graph at any time:
@@ -228,9 +225,45 @@ docker system prune -a
 - **Graphify** — Knowledge graph builder and query engine (pre-installed)
 - **Node.js / npm, Python, Chromium** — Runtime support
 
+## Atlassian Integration
+
+Search Confluence and Jira from the terminal via the pre-installed `atlassian-cli.py`.
+
+### Setup
+
+```bash
+python3 /project/tooling/scripts/atlassian-cli.py configure
+```
+
+Prompts for Jira/Confluence URL, email, and API token. Credentials stored at `~/.secrets/mcp-atlassian.json` (chmod 600, not persisted across rebuilds).
+
+Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens.
+
+### Usage
+
+```bash
+# Confluence — search with CQL
+python3 /project/tooling/scripts/atlassian-cli.py confluence search 'text~"keyword" AND space=TEAM'
+python3 /project/tooling/scripts/atlassian-cli.py confluence get <PAGE_ID>
+
+# Jira — search with JQL
+python3 /project/tooling/scripts/atlassian-cli.py jira search "project=PROJ AND status!=Done"
+python3 /project/tooling/scripts/atlassian-cli.py jira get PROJ-123
+python3 /project/tooling/scripts/atlassian-cli.py jira create PROJ "Summary" "Description"
+```
+
+### Search syntax
+
+| System | Syntax | Example |
+|--------|--------|--------|
+| **CQL** (Confluence) | `text~"keyword"` | `text~"onboarding" AND space=TEAM` |
+| **JQL** (Jira) | `field = value` | `project=PROJ AND status!=Done` |
+
+> Free-text queries fail in CQL — always use operators like `text~`, `space=`, `type=`.
+
 ## Keybinds
 
-See [SHORTCUTS.md](tooling/config/SHORTCUTS.md) for Neovim keymaps.
+See [Keybinds](doc/keybinds.md) for Neovim keymaps.
 
 ## Knowledge Tools
 
@@ -271,17 +304,8 @@ After changing `tooling/Dockerfile` or configs under `tooling/`:
 ├── start.sh                 # Container lifecycle script
 ├── setenv.sh                # Dynamic env config (Docker vs Podman)
 ├── docker-compose.yml       # Container definition
-├── graphify-out/            # Knowledge graph outputs (auto-generated)
-│   ├── graph.html           # Interactive graph visualization
-│   ├── GRAPH_REPORT.md      # Audit trail report
-│   └── graph.json           # Knowledge graph data
-├── knowledgebase/           # Distilled decisions, patterns, sessions
-│   ├── decisions/           # Architecture decisions with rationale
-│   ├── patterns/            # Implementation patterns and gotchas
-│   ├── sessions/            # Session summaries
-│   └── index.yaml           # Knowledgebase index
-├── apps/                    # Deployed app targets
-├── scripts/                 # Custom scripts
+├── doc/                     # Public documentation
+│   └── keybinds.md          # Neovim keybind reference
 └── tooling/
     ├── Dockerfile           # Image build (debian/ollama base)
     ├── entrypoint-wrapper.sh # First-run setup (nvim plugins, conditional bge-large pull)
@@ -291,15 +315,8 @@ After changing `tooling/Dockerfile` or configs under `tooling/`:
     └── skills/              # pi skills (atlassian, coo-advisor, etc.)
 ```
 
-Additional project-level configs:
-
-| File | Purpose |
-|------|---------|
-| `.pi/AGENT.md` | Agent instructions — always search graph before work |
-| `.pi/settings.json` | Pi project settings |
-| `graphify-out/graph.json` | Knowledge graph — persisted across sessions |
-| `knowledgebase/index.yaml` | Knowledgebase file index |
+> **Runtime directories** (created locally, gitignored): `graphify-out/`, `knowledgebase/`, `docs/`, `apps/`, `memory/`, `.pi/`.
 
 ## Documentation
 
-- [docs/atlassian-setup.md](docs/atlassian-setup.md) — Setting up Confluence and Jira integration
+- [keybinds.md](doc/keybinds.md) — Neovim keybind reference
