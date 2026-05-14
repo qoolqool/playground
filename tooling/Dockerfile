@@ -107,7 +107,6 @@ COPY --chown=tool:tool config/bashrc /home/tool/.bashrc
 COPY --chown=tool:tool config/starship.toml /home/tool/.config/starship.toml
 COPY --chown=tool:tool config/gitconfig /home/tool/.gitconfig
 COPY --chown=tool:tool entrypoint-wrapper.sh /entrypoint-wrapper.sh
-COPY --chown=tool:tool port-forward.py /home/tool/port-forward.py
 
 RUN chmod +x /entrypoint-wrapper.sh
 
