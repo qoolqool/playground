@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# --- Git Submodule Initialization ---
+echo "Initializing git submodules..."
+git submodule update --init --recursive
+
 # --- Ownership Fix ---
 echo "Fixing /project permissions..."
 sudo chown -R tool:tool /project 2>/dev/null || true
