@@ -19,3 +19,4 @@ Dockerfile.cloudflare
 
 # Knowledge graph outputs (generated, not source)
 graphify-out/
+.container_name

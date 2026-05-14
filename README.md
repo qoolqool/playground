@@ -4,6 +4,13 @@ A containerized development environment for vibe coding with AI agents, supporti
 
 ## Quick Start
 
+> ⚠️ **Important Git Setup**
+> This repository uses submodules. Clone and initialize submodules first:
+> ```bash
+> git clone <repo-url>
+> git submodule update --init --recursive
+> ```
+
 ```bash
 ./start.sh           # First run: build and enter container
 ./start.sh           # Subsequent runs: attach to existing container
