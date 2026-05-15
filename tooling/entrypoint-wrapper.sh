@@ -9,6 +9,23 @@ git submodule update --init --recursive
 echo "Fixing /project permissions..."
 sudo chown -R tool:tool /project 2>/dev/null || true
 
+# --- Pi Skills Bootstrap ---
+# Symlink tooling/skills/ into .pi/skills/ so agent skills survive fresh clones.
+# .pi/ is gitignored, so these symlinks are recreated on every container start.
+SKILLS_SRC="/project/tooling/skills"
+SKILLS_DST="/project/.pi/skills"
+if [ -d "$SKILLS_SRC" ]; then
+  mkdir -p "$SKILLS_DST"
+  for skill_dir in "$SKILLS_SRC"/*/; do
+    if [ -d "$skill_dir" ]; then
+      skill_name=$(basename "$skill_dir")
+      ln -sf "$skill_dir" "$SKILLS_DST/$skill_name"
+    fi
+  done
+  synced=$(ls -1d "$SKILLS_DST"/*/ 2>/dev/null | wc -l | tr -d ' ')
+  echo "Bootstrapped $synced pi skills from tooling/skills/"
+fi
+
 # Ensure nvim plugins & tools are installed (first run only)
 if [ ! -d "${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy" ]; then
   echo "Installing nvim plugins (first run)..."
@@ -30,18 +47,14 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Pull embedding model ONLY if graphify is not available (vector DB fallback path).
-# Graphify is the preferred knowledgebase search backend and does not need bge-large.
-# See DECISION#2026-05-13#007.
-if ! python3 -c "import graphify" 2>/dev/null || [ ! -f /project/graphify-out/graph.json ]; then
-  if ! curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any('bge-large' in m['name'] for m in d.get('models',[])) else 1)" 2>/dev/null; then
-    echo "Graphify not available — pulling bge-large embedding model for vector DB fallback (~670MB)..."
-    ollama pull bge-large:latest &
-  else
-    echo "bge-large already pulled (vector DB fallback available)"
-  fi
+# Pull embedding model for vector DB (preferred knowledgebase search backend).
+# Graphify is available as a structural fallback but is heavy for small LLMs.
+# See DECISION#2026-05-15#001.
+if ! curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any('bge-large' in m['name'] for m in d.get('models',[])) else 1)" 2>/dev/null; then
+  echo "Pulling bge-large embedding model for vector DB (~670MB)..."
+  ollama pull bge-large:latest &
 else
-  echo "Graphify available — skipping bge-large pull (not needed for graph-based search)"
+  echo "bge-large already pulled (vector DB available)"
 fi
 
 

@@ -50,10 +50,10 @@ along with extensions for persistent memory and knowledge management:
 
 The agent is configured (via `.pi/AGENT.md`) to **always search the knowledgebase before starting work**. This prevents re-solving previously solved problems:
 
-- **Structural queries** → `/graphify query`, `/graphify explain`, `/graphify path` — finds relationships, communities, and cross-cutting connections that keyword search misses
-- **Conversational/semantic queries** → `/search-kb` (fallback when graphify is not available) — finds decisions, patterns, and gotchas by semantic similarity
+- **Conversational/semantic queries** → `/search-kb` — finds decisions, patterns, and gotchas by semantic similarity (preferred, works well with small LLMs)
+- **Structural queries** → `/graphify query`, `/graphify explain`, `/graphify path` — finds relationships, communities, and cross-cutting connections (optional, heavier on context)
 
-**Graphify is the preferred search method.** It stores relationships, community structure, and full content in one self-contained file. No external model or embedding server needed. The vector DB (`search-kb`) is retained as a fallback for environments without graphify.
+**Vector DB (`search-kb`) is the preferred search method.** It provides fast, deterministic, ranked results via cosine similarity over pre-computed embeddings. No large graph context needed — small LLMs process the output efficiently. Graphify is retained as an optional structural tool for capable models.
 
 ### Quick Setup
 
@@ -276,25 +276,27 @@ See [Keybinds](doc/keybinds.md) for Neovim keymaps.
 
 | Tool | Purpose | Search Method | Dependencies |
 |------|---------|---------------|-------------|
-| **graphify** ✅ | Structural knowledge graph — entities, relationships, communities, paths | `/graphify query`, `/graphify explain`, `/graphify path` | None (self-contained JSON) |
-| **search-kb** 🔄 | Semantic vector search — cosine similarity over embeddings | `/search-kb "query"` | Ollama + bge-large (~670MB) |
-| **distill-and-index** | Distill conversation → knowledgebase YAML → index | Automatic via `/distill-and-index` | Graphify (preferred) or vector DB |
+| **search-kb** ✅ | Semantic vector search — cosine similarity over embeddings | `/search-kb "query"` | Ollama + bge-large (~670MB) |
+| **graphify** 🔄 | Structural knowledge graph — entities, relationships, communities, paths | `/graphify query`, `/graphify explain`, `/graphify path` | None (self-contained JSON) |
+| **distill-and-index** | Distill conversation → knowledgebase YAML → index | Automatic via `/distill-and-index` | Vector DB (preferred) or graphify |
 
-**Graphify is the preferred search backend.** It provides relationship traversal, community detection, and path queries that vector search cannot. The `distill-and-index` skill auto-detects which indexer is available and uses graphify when present, falling back to the vector DB pipeline when it's not.
+**Vector DB (`search-kb`) is the preferred search backend.** It provides fast, ranked, fuzzy matching that small LLMs can consume efficiently. Graphify offers relationship traversal and community detection, but requires more model capacity; it is available as a structural fallback when installed.
 
 **When to use each:**
-- `/graphify query "X"` — "how does X connect to Y?" "what communities overlap?" "what are the cross-cutting patterns?"
+- `/search-kb "X"` — "find documents semantically similar to X" (default, lightweight)
+- `/graphify query "X"` — "how does X connect to Y?" "what communities overlap?" (optional, heavier)
 - `/graphify explain "X"` — "tell me everything about X and what surrounds it"
 - `/graphify path "A" "B"` — "trace the shortest connection from A to B"
-- `/search-kb "X"` — (fallback) "find documents semantically similar to X"
 
-### Embedding Model (Vector DB Fallback Only)
+### Embedding Model (Vector DB)
 
-The vector DB fallback uses **`bge-large:latest`** (1024-dimensional vectors) via Ollama for embeddings. This model is pulled **only when graphify is not available** — the `entrypoint-wrapper.sh` checks for graphify first and skips the ~670MB download when the knowledge graph is present. Do **not** use `bge-small` (384-dim) — dimension mismatch corrupts the vector index.
+The preferred vector DB uses **`bge-large:latest`** (1024-dimensional vectors) via Ollama for embeddings. This model is pulled **unconditionally at container startup** — the `entrypoint-wrapper.sh` ensures it is available. Do **not** use `bge-small` (384-dim) — dimension mismatch corrupts the vector index.
+
+> **Graphify fallback:** If graphify is installed and you explicitly want structural queries, no embedding model is needed. Graphify is self-contained.
 
 ### distill-and-index on Pi
 
-On Pi, the `distill-and-index` skill **skips memory file writing** — `pi-hermes-memory` handles that. It only writes knowledgebase YAML files and indexes them via graphify (preferred) or the vector DB. This avoids duplicate/conflicting memory entries.
+On Pi, the `distill-and-index` skill **skips memory file writing** — `pi-hermes-memory` handles that. It only writes knowledgebase YAML files and indexes them via the vector DB (preferred) or graphify. This avoids duplicate/conflicting memory entries.
 
 ## Rebuilding
 
