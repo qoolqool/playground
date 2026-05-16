@@ -7,6 +7,9 @@ if [ -f ./setenv.sh ]; then
   source ./setenv.sh
 fi
 
+# Container runtime command (set by setenv.sh, defaults to docker)
+DOCKER="${CONTAINER_CMD:-docker}"
+
 # Parse arguments
 FORCE_REBUILD=false
 while [[ $# -gt 0 ]]; do
@@ -32,7 +35,7 @@ find_available_name() {
     local base="tooling"
     local name="$base"
     local counter=2
-    while docker ps -a --format '{{.Names}}' | grep -q "^${name}$"; do
+    while $DOCKER ps -a --format '{{.Names}}' | grep -q "^${name}$"; do
         name="${base}-${counter}"
         counter=$((counter + 1))
     done
@@ -44,11 +47,11 @@ if [ "$FORCE_REBUILD" = true ]; then
     if [ -f "$CONTAINER_FILE" ]; then
         CONTAINER_NAME=$(cat "$CONTAINER_FILE")
         echo "Force rebuild - removing container '$CONTAINER_NAME'..."
-        docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+        $DOCKER rm -f "$CONTAINER_NAME" 2>/dev/null || true
     fi
     rm -f "$CONTAINER_FILE"
     echo "Force rebuild - rebuilding image..."
-    docker compose build
+    $DOCKER compose build
 
     # Find available name
     CONTAINER_NAME=$(find_available_name)
@@ -62,13 +65,13 @@ OVERRIDE_EOF
 
     echo ""
     echo "Creating container..."
-    docker compose up -d
+    $DOCKER compose up -d
     echo "$CONTAINER_NAME" > "$CONTAINER_FILE"
     rm -f docker-compose.override.yml
     echo ""
     echo "Entering container (type 'exit' to leave)..."
     echo ""
-    docker exec -it "$CONTAINER_NAME" bash
+    $DOCKER exec -it "$CONTAINER_NAME" bash
     exit 0
 fi
 
@@ -76,11 +79,11 @@ if [ -f "$CONTAINER_FILE" ]; then
     # This playground has an assigned container
     CONTAINER_NAME=$(cat "$CONTAINER_FILE")
 
-    if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    if $DOCKER ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         echo "Container '$CONTAINER_NAME' is running."
-    elif docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    elif $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         echo "Container '$CONTAINER_NAME' exists but is stopped. Starting..."
-        docker start "$CONTAINER_NAME"
+        $DOCKER start "$CONTAINER_NAME"
     else
         echo "Container '$CONTAINER_NAME' was removed. Creating new one..."
         rm -f "$CONTAINER_FILE"
@@ -90,14 +93,14 @@ if [ -f "$CONTAINER_FILE" ]; then
     if [ -f "$CONTAINER_FILE" ]; then
         echo "Entering container (type 'exit' to leave)..."
         echo ""
-        docker exec -it "$CONTAINER_NAME" bash
+        $DOCKER exec -it "$CONTAINER_NAME" bash
         exit 0
     fi
 fi
 
 # First run - build and create container
 echo "First run - building tooling container..."
-docker compose build
+$DOCKER compose build
 
 # Find available container name (check before creating)
 CONTAINER_NAME=$(find_available_name)
@@ -112,7 +115,7 @@ OVERRIDE_EOF
 
 echo ""
 echo "Starting container..."
-docker compose up -d
+$DOCKER compose up -d
 
 # Store container name for future runs
 echo "$CONTAINER_NAME" > "$CONTAINER_FILE"
@@ -121,4 +124,4 @@ rm -f docker-compose.override.yml
 echo ""
 echo "Entering container (type 'exit' to leave)..."
 echo ""
-docker exec -it "$CONTAINER_NAME" bash
+$DOCKER exec -it "$CONTAINER_NAME" bash
