@@ -15,4 +15,5 @@ services:
       - DOCKER_HOST=${D_HOST}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
     restart: unless-stopped

@@ -64,8 +64,11 @@ echo "|    Ollama is now running in paperclip container        |"
 echo "|    Ollama URL: http://127.0.0.1:11434                  |"
 
 # Detect host IP for local model access (UX: OLLAMA_HOST)
+# Docker uses host.docker.internal; Podman uses host.containers.internal
 if getent hosts host.docker.internal >/dev/null 2>&1; then
   export HOST_IP=$(getent hosts host.docker.internal | awk '{print $1}')
+elif getent hosts host.containers.internal >/dev/null 2>&1; then
+  export HOST_IP=$(getent hosts host.containers.internal | awk '{print $1}')
 elif command -v ip >/dev/null 2>&1; then
   export HOST_IP=$(ip route | awk '/default/ {print $3}')
 fi
