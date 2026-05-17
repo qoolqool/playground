@@ -47,14 +47,14 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Pull embedding model for vector DB (preferred knowledgebase search backend).
-# Graphify is available as a structural fallback but is heavy for small LLMs.
-# See DECISION#2026-05-15#001.
+# Pull embedding model for vector DB search.
+# Embed-server HTTP sidecar at host.containers.internal:9001 is checked first.
+# Falls back to local embed-server socket, then Ollama.
 if ! curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any('bge-large' in m['name'] for m in d.get('models',[])) else 1)" 2>/dev/null; then
-  echo "Pulling bge-large embedding model for vector DB (~670MB)..."
+  echo "Pulling bge-large embedding model (~670MB)..."
   ollama pull bge-large:latest &
 else
-  echo "bge-large already pulled (vector DB available)"
+  echo "bge-large already pulled"
 fi
 
 
