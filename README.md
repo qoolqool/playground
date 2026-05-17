@@ -17,6 +17,8 @@ A containerized development environment for vibe coding with AI agents, supporti
 ./start.sh -f        # Force rebuild
 ```
 
+The playground works standalone — [Central KB](https://github.com/qoolqool/central-kb) is **optional**. If the central-kb services aren't running, the container gracefully falls back to local Ollama embeddings and local SQLite. See [Central KB Setup](#central-kb-setup) to enable cross-project knowledge sharing.
+
 ## Dynamic Configuration
 
 `setenv.sh` auto-detects whether you're running **Docker** or **Podman** and sets the correct environment variables (`DOCKER_HOST`, socket path) used by `docker-compose.yml`. It is sourced automatically by `start.sh`.
@@ -33,6 +35,57 @@ A containerized development environment for vibe coding with AI agents, supporti
 
 > **Podman on macOS?** You'll need a running Podman VM in rootful mode with the REST API exposed on TCP port 2375. See [`setenv.sh`](setenv.sh) for the logic, or check the [Podman docs](https://podman.io/docs) for VM setup.
 
+## Central KB Setup
+
+The [central-kb](https://github.com/qoolqool/central-kb) server provides cross-project knowledge sharing, simhash dedup, drift detection, and a shared embedding sidecar. It's **optional** — the playground falls back to local Ollama embeddings and local SQLite when it's not running.
+
+### Prerequisites
+
+- Docker or Podman (same runtime you use for the playground)
+- No GPU required — the embed-server uses CPU-only PyTorch
+
+### Start central-kb
+
+```bash
+# Clone both repos side by side
+git clone https://github.com/qoolqool/central-kb
+git clone https://github.com/qoolqool/playground
+
+# Start central-kb first
+cd central-kb && docker compose up -d
+
+# Wait for both services to become healthy
+docker compose ps
+
+# Start playground (auto-detects central-kb on host.containers.internal)
+cd ../playground && ./start.sh
+```
+
+The playground container auto-detects the central-kb services via `host.containers.internal:9000` (API) and `host.containers.internal:9001` (embed sidecar). No additional configuration needed.
+
+### Verify connectivity
+
+```bash
+# From inside the playground container
+curl -s http://host.containers.internal:9000/health
+curl -s http://host.containers.internal:9001/health
+kb search "test" --scope my-project
+```
+
+### CLI reference
+
+The `kb` CLI is pre-installed in the playground container. Full usage: [central-kb README](https://github.com/qoolqool/central-kb#cli-usage).
+
+| Command | Description |
+|---------|-------------|
+| `kb submit --project <name>` | Push local KB entries to central |
+| `kb pull --project <name>` | Pull project entries from central |
+| `kb search "query" --scope <name>` | Hybrid search (cosine + FTS5) |
+| `kb explain "query" --scope <name>` | Structured narrative synthesis |
+| `kb drift --project <name>` | Show cross-project drift report |
+| `kb candidates` | List entries promoted to global |
+| `kb promote <id> approve` | Approve a promotion candidate |
+
 ## Pi Coding Agent
 
 The container comes with [pi](https://pi.dev), a terminal-native coding agent, pre-installed along with extensions for persistent memory and knowledge management:
@@ -42,7 +95,7 @@ The container comes with [pi](https://pi.dev), a terminal-native coding agent, p
 | **Persistent Memory** | Remembers facts, preferences, and corrections across sessions | `memory_search`, auto-learns from corrections |
 | **Session Search** | Full-text search across all past conversations | `session_search` |
 | **Knowledge Search** | Unified search across local + shared knowledge bases | `search-kb` skill |
-| **Central KB** | Cross-project knowledge sharing via shared server | `kb submit`, `kb search`, `kb explain` |
+| **Central KB** | Cross-project knowledge sharing via [central-kb](https://github.com/qoolqool/central-kb) server | `kb submit`, `kb search`, `kb explain` |
 | **Atlassian Integration** | Search Confluence and Jira from the terminal | `atlassian-cli.py configure` then `confluence search` |
 | **Skills** | Reusable workflows for the agent (debugging, code review, planning) | Auto-discovered from `tooling/skills/` |
 
@@ -53,7 +106,7 @@ The agent is configured (via `.pi/AGENT.md`) to **always search the knowledgebas
 | Tier | Scope | Command | Embeddings needed |
 |------|-------|---------|-------------------|
 | **Vector DB** | Local (this project) | `search-kb-memory.py "<query>"` | Yes (client-side, for query vector) |
-| **Central KB** | Shared (cross-project) | `kb search "<query>" --scope <project>` | No (server generates query vectors) |
+| **Central KB** | Shared (cross-project) | `kb search "<query>" --scope <project>` | No (server generates query vectors) · [repo](https://github.com/qoolqool/central-kb) |
 
 **In an agent session**, use `kb explain` without `--llm` — the agent itself synthesizes the narrative from structured results, far better than any local model.
 
@@ -68,7 +121,7 @@ Distills conversation insights into durable knowledge files, then indexes them f
 | Tier | Scope | Index Method | Embeddings |
 |------|-------|-------------|------------|
 | **Vector DB** | Local | `load-kb-to-memory.py` (cosine similarity over 1024-dim vectors) | Yes (embed-server or Ollama) |
-| **Central KB** | Shared | `kb submit` (pushes to shared server) | Yes (for submit; search uses server-side) |
+| **Central KB** | Shared | `kb submit` (pushes to [central-kb](https://github.com/qoolqool/central-kb) server) | Yes (for submit; search uses server-side) |
 
 Embedding sources are tried in priority order:
 1. **embed-server socket** (`/tmp/embed-server.sock`) — ~40ms
@@ -159,41 +212,59 @@ docker rmi $(docker images -q baseline-tooling)
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Tooling Container                                        │
+│  Tooling Container  ([playground](https://github.com/qoolqool/playground))      │
 │                                                          │
 │  ┌─────────────────────────────────────────────────────┐ │
 │  │ Knowledge Pipeline                                  │ │
 │  │                                                     │ │
 │  │  Write:  distill-and-index → knowledgebase/*.yaml  │ │
 │  │           → load-kb-to-memory.py → agentdb.sqlite3  │ │
-│  │           → kb submit → Central KB server            │ │
+│  │           → kb submit ──────────────────────────────────► Central KB API
 │  │                                                     │ │
 │  │  Read:   search-kb skill                            │ │
 │  │           → search-kb-memory.py   (local results)  │ │
-│  │           → kb search/explain     (shared results) │ │
+│  │           → kb search/explain  ─────────────────────────► Central KB API
 │  │           → agent synthesizes narrative             │ │
 │  └─────────────────────────────────────────────────────┘ │
 │                                                          │
-│  ┌─────────────────┐  ┌──────────────────────────────┐  │
-│  │ Ollama            │  │ embed-server sidecar          │  │
-│  │ localhost:11434   │  │ host.containers.internal:9001 │  │
-│  │ (local models)   │  │ (bge-large, 1024-dim)         │  │
-│  └─────────────────┘  └──────────────────────────────┘  │
+│  ┌─────────────────┐                                    │
+│  │ Ollama            │                                    │
+│  │ localhost:11434   │  ◄── embed fallback when          │
+│  │ (local models)   │      central-kb unavailable        │
+│  └─────────────────┘                                    │
 │                                                          │
 │  ┌─────────────────────────────────────────────────────┐ │
 │  │ pi-local → OLLAMA_HOST=$HOST_IP:11434               │ │
 │  │ Neovim · Docker · Starship · Git                    │ │
 │  └─────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────┘
-         │ Docker socket mount
-         ▼
-   Host Docker daemon         ┌─────────────────────────┐
-                               │ Central KB server        │
-                               │ host.containers.internal │
-                               │ :9000 (API)              │
-                               │ :9001 (embed sidecar)    │
-                               └─────────────────────────┘
+└──────────────────────────┬───────────────────────────────┘
+                           │
+         host.containers.internal
+                           │
+         ┌─────────────────┴──────────────────────────────┐
+         │  Central KB   ([central-kb](https://github.com/qoolqool/central-kb))   │
+         │                                                  │
+         │  ┌────────────────────────────────────────────┐ │
+         │  │ central-kb (port 9000)                     │ │
+         │  │ FastAPI + SQLite + FTS5 hybrid search       │ │
+         │  │ Simhash dedup · Drift detection             │ │
+         │  │ Global pattern promotion                    │ │
+         │  └────────────────────────────────────────────┘ │
+         │                                                  │
+         │  ┌────────────────────────────────────────────┐ │
+         │  │ embed-server (port 9001)                   │ │
+         │  │ bge-large-en-v1.5, 1024-dim               │ │
+         │  │ CPU-only PyTorch                           │ │
+         │  └────────────────────────────────────────────┘ │
+         └──────────────────────────────────────────────────┘
+                           ▲        ▲        ▲
+                           │        │        │
+                           ▼        ▼        ▼
+                        proj-A   proj-B   proj-C
+                     (more playground containers)
 ```
+
+> **Optional:** Central KB runs as a separate [`docker compose up`](https://github.com/qoolqool/central-kb) — the playground works without it, falling back to local Ollama embeddings and local SQLite.
 
 ## Docker Cheat Sheet
 
@@ -319,7 +390,7 @@ See [Keybinds](doc/keybinds.md) for Neovim keymaps.
 | Tool | Purpose | Scope | Embeddings needed |
 |------|---------|-------|-------------------|
 | **search-kb** | Unified search across all backends | Local + shared | Only for local vector DB queries |
-| **kb** | Submit, pull, search, explain, drift | Shared (Central KB) | For submit only (search is server-side) |
+| **kb** | Submit, pull, search, explain, drift | Shared ([central-kb](https://github.com/qoolqool/central-kb)) | For submit only (search is server-side) |
 | **distill-and-index** | Distill conversation → knowledgebase → index | Both | Yes (embed-server or Ollama) |
 
 ### Embedding Model
