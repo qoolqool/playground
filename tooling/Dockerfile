@@ -156,20 +156,24 @@ COPY --chown=tool:tool skills/atlassian/ /home/tool/.local/share/skill-marketpla
 # Install pi-hermes-memory (persistent memory + session search + secret scanning)
 RUN pi install npm:pi-hermes-memory || true
 
-# --- GRAPHIFY (knowledge graph) -----------------------------------------
-RUN pipx install graphifyy && graphify install --platform pi
-
-
 # --- ATLASSIAN CLI SCRIPT ------------------------------------------------
 COPY --chown=tool:tool scripts/atlassian-cli.py scripts/atlassian-cli.py
 
-# --- KNOWLEDGEBASE VECTOR SEARCH SCRIPTS --------------------------------
-# Retained as fallback for distill-and-index/search-kb when graphify is not available.
-# Graphify (preferred) does not need these scripts or the bge-large model.
-# See DECISION#2026-05-13#007: graphify replaces vector DB as preferred search backend.
+# --- KNOWLEDGEBASE VECTOR SEARCH + CENTRAL KB CLI --------------------------------
+# Vector DB scripts and embed-server for local indexing.
+# Embed-server HTTP sidecar at host.containers.internal:9001 is checked first (no local model needed).
+# Falls back to local embed-server socket, then Ollama bge-large.
+# Central KB CLI (kb) is installed from the skill directory.
 COPY --chown=tool:tool scripts/embed-server.py scripts/embed-server.py
 COPY --chown=tool:tool scripts/load-kb-to-memory.py scripts/load-kb-to-memory.py
 COPY --chown=tool:tool scripts/search-kb-memory.py scripts/search-kb-memory.py
+
+# Install kb CLI (Central Knowledge Base)
+COPY --chown=tool:tool skills/install-kb-cli/ /tmp/kb-skill/
+RUN mkdir -p /home/tool/.local/bin && \
+    cp /tmp/kb-skill/kb-cli.py /home/tool/.local/bin/kb && \
+    chmod +x /home/tool/.local/bin/kb && \
+    rm -rf /tmp/kb-skill
 
 # Cleanup: remove npm/pnpm caches and tmp artifacts
 RUN rm -rf /tmp/* /home/tool/.npm /home/tool/.cache/node 2>/dev/null; \

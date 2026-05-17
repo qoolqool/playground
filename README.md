@@ -35,40 +35,64 @@ A containerized development environment for vibe coding with AI agents, supporti
 
 ## Pi Coding Agent
 
-The container comes with [pi](https://pi.dev), a terminal-native coding agent, pre-installed
-along with extensions for persistent memory and knowledge management:
+The container comes with [pi](https://pi.dev), a terminal-native coding agent, pre-installed along with extensions for persistent memory and knowledge management:
 
 | Feature | What it does | How to use |
 |---------|-------------|------------|
 | **Persistent Memory** | Remembers facts, preferences, and corrections across sessions | `memory_search`, auto-learns from corrections |
 | **Session Search** | Full-text search across all past conversations | `session_search` |
-| **Knowledge Graph** | Structural knowledge graph from code, docs, decisions, patterns — entities, relationships, communities | `/graphify .` then `/graphify query`, `/graphify explain`, `/graphify path` |
+| **Knowledge Search** | Unified search across local + shared knowledge bases | `search-kb` skill |
+| **Central KB** | Cross-project knowledge sharing via shared server | `kb submit`, `kb search`, `kb explain` |
 | **Atlassian Integration** | Search Confluence and Jira from the terminal | `atlassian-cli.py configure` then `confluence search` |
 | **Skills** | Reusable workflows for the agent (debugging, code review, planning) | Auto-discovered from `tooling/skills/` |
 
 ### Proactive Knowledge Search
 
-The agent is configured (via `.pi/AGENT.md`) to **always search the knowledgebase before starting work**. This prevents re-solving previously solved problems:
+The agent is configured (via `.pi/AGENT.md`) to **always search the knowledgebase before starting work**. This prevents re-solving previously solved problems. The `search-kb` skill automatically detects available backends and searches all of them:
 
-- **Conversational/semantic queries** → `/search-kb` — finds decisions, patterns, and gotchas by semantic similarity (preferred, works well with small LLMs)
-- **Structural queries** → `/graphify query`, `/graphify explain`, `/graphify path` — finds relationships, communities, and cross-cutting connections (optional, heavier on context)
+| Tier | Scope | Command | Embeddings needed |
+|------|-------|---------|-------------------|
+| **Vector DB** | Local (this project) | `search-kb-memory.py "<query>"` | Yes (client-side, for query vector) |
+| **Central KB** | Shared (cross-project) | `kb search "<query>" --scope <project>` | No (server generates query vectors) |
 
-**Vector DB (`search-kb`) is the preferred search method.** It provides fast, deterministic, ranked results via cosine similarity over pre-computed embeddings. No large graph context needed — small LLMs process the output efficiently. Graphify is retained as an optional structural tool for capable models.
+**In an agent session**, use `kb explain` without `--llm` — the agent itself synthesizes the narrative from structured results, far better than any local model.
 
-### Quick Setup
+## Knowledge Pipeline
+
+Two complementary skills manage the knowledge lifecycle:
+
+### `distill-and-index` — Write Pipeline
+
+Distills conversation insights into durable knowledge files, then indexes them for search.
+
+| Tier | Scope | Index Method | Embeddings |
+|------|-------|-------------|------------|
+| **Vector DB** | Local | `load-kb-to-memory.py` (cosine similarity over 1024-dim vectors) | Yes (embed-server or Ollama) |
+| **Central KB** | Shared | `kb submit` (pushes to shared server) | Yes (for submit; search uses server-side) |
+
+Embedding sources are tried in priority order:
+1. **embed-server socket** (`/tmp/embed-server.sock`) — ~40ms
+2. **embed-server HTTP sidecar** (`host.containers.internal:9001`) — ~100ms
+3. **Ollama** (`localhost:11434`, `bge-large:latest`) — ~330ms
+
+On a fresh clone with no local model pulled, the HTTP embed-server sidecar provides embeddings automatically — no download required.
+
+### `search-kb` — Read Pipeline
+
+Searches all available backends and synthesizes results into a coherent narrative.
 
 ```bash
-# Build a knowledge graph of the project (recommended — graphify is pre-installed)
-/graphify .
+# Step 1: Local search (if vector DB available)
+python3 /project/scripts/search-kb-memory.py "embedding model" -n decisions
+
+# Step 2: Central KB search (if server available)
+kb search "embedding model" --scope my-project
+
+# Step 3: Structured explain (agent synthesizes narrative)
+kb explain "embedding model" --scope my-project
 ```
 
-After `/graphify .`, you can query the graph at any time:
-
-```
-/graphify query "what connects Docker to the embedding pipeline"
-/graphify explain "bge-large Embedding Model"
-/graphify path "Lean Container" "Knowledge Pipeline"
-```
+The agent synthesizes findings from all available backends, tracing how decisions evolved, highlighting cross-project insights, and answering the original query with specific entry references.
 
 ## Dual Model Support
 
@@ -117,6 +141,7 @@ cd my-new-project
 
 - The Docker **image** is built once and reused across projects
 - Host Ollama serves local models to all containers simultaneously
+- **Central KB server** shares knowledge across all projects
 
 ### Cleaning up
 
@@ -133,25 +158,41 @@ docker rmi $(docker images -q baseline-tooling)
 ## Architecture
 
 ```
-┌─────────────────────────────────┐
-│  Tooling Container              │
-│  ┌───────────────────────────┐  │
-│  │ Ollama (container)        │  │  Cloud model broker
-│  │ localhost:11434           │  │  `ollama launch pi`
-│  └───────────────────────────┘  │
-│                                 │
-│  ┌───────────────────────────┐  │
-│  │ Ollama CLI ──────────────────┼──► host.docker.internal:11434
-│  │ pi-local → OLLAMA_HOST    │  │  Host GPU models
-│  └───────────────────────────┘  │
-│                                 │
-│  Neovim · Docker · pi           │
-│  Starship · Git                 │
-│  Graphify · distill-and-index   │
-└─────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Tooling Container                                        │
+│                                                          │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │ Knowledge Pipeline                                  │ │
+│  │                                                     │ │
+│  │  Write:  distill-and-index → knowledgebase/*.yaml  │ │
+│  │           → load-kb-to-memory.py → agentdb.sqlite3  │ │
+│  │           → kb submit → Central KB server            │ │
+│  │                                                     │ │
+│  │  Read:   search-kb skill                            │ │
+│  │           → search-kb-memory.py   (local results)  │ │
+│  │           → kb search/explain     (shared results) │ │
+│  │           → agent synthesizes narrative             │ │
+│  └─────────────────────────────────────────────────────┘ │
+│                                                          │
+│  ┌─────────────────┐  ┌──────────────────────────────┐  │
+│  │ Ollama            │  │ embed-server sidecar          │  │
+│  │ localhost:11434   │  │ host.containers.internal:9001 │  │
+│  │ (local models)   │  │ (bge-large, 1024-dim)         │  │
+│  └─────────────────┘  └──────────────────────────────┘  │
+│                                                          │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │ pi-local → OLLAMA_HOST=$HOST_IP:11434               │ │
+│  │ Neovim · Docker · Starship · Git                    │ │
+│  └─────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
          │ Docker socket mount
          ▼
-   Host Docker daemon
+   Host Docker daemon         ┌─────────────────────────┐
+                               │ Central KB server        │
+                               │ host.containers.internal │
+                               │ :9000 (API)              │
+                               │ :9001 (embed sidecar)    │
+                               └─────────────────────────┘
 ```
 
 ## Docker Cheat Sheet
@@ -229,7 +270,8 @@ docker system prune -a
 - **Docker CLI + Compose** — Socket-mounted from host
 - **Starship** — Custom prompt
 - **Pi** — AI coding agent with memory + session search + skill system
-- **Graphify** — Knowledge graph builder and query engine (pre-installed)
+- **kb** — Central Knowledge Base CLI (submit, pull, search, explain, drift, candidates, conflicts)
+- **embed-server** — Local embedding daemon (bge-large, 1024-dim, ~40ms per vector)
 - **Node.js / npm, Python, Chromium** — Runtime support
 
 ## Atlassian Integration
@@ -262,7 +304,7 @@ python3 /project/tooling/scripts/atlassian-cli.py jira create PROJ "Summary" "De
 ### Search syntax
 
 | System | Syntax | Example |
-|--------|--------|--------|
+|--------|--------|---------|
 | **CQL** (Confluence) | `text~"keyword"` | `text~"onboarding" AND space=TEAM` |
 | **JQL** (Jira) | `field = value` | `project=PROJ AND status!=Done` |
 
@@ -274,29 +316,29 @@ See [Keybinds](doc/keybinds.md) for Neovim keymaps.
 
 ## Knowledge Tools
 
-| Tool | Purpose | Search Method | Dependencies |
-|------|---------|---------------|-------------|
-| **search-kb** ✅ | Semantic vector search — cosine similarity over embeddings | `/search-kb "query"` | Ollama + bge-large (~670MB) |
-| **graphify** 🔄 | Structural knowledge graph — entities, relationships, communities, paths | `/graphify query`, `/graphify explain`, `/graphify path` | None (self-contained JSON) |
-| **distill-and-index** | Distill conversation → knowledgebase YAML → index | Automatic via `/distill-and-index` | Vector DB (preferred) or graphify |
+| Tool | Purpose | Scope | Embeddings needed |
+|------|---------|-------|-------------------|
+| **search-kb** | Unified search across all backends | Local + shared | Only for local vector DB queries |
+| **kb** | Submit, pull, search, explain, drift | Shared (Central KB) | For submit only (search is server-side) |
+| **distill-and-index** | Distill conversation → knowledgebase → index | Both | Yes (embed-server or Ollama) |
 
-**Vector DB (`search-kb`) is the preferred search backend.** It provides fast, ranked, fuzzy matching that small LLMs can consume efficiently. Graphify offers relationship traversal and community detection, but requires more model capacity; it is available as a structural fallback when installed.
+### Embedding Model
 
-**When to use each:**
-- `/search-kb "X"` — "find documents semantically similar to X" (default, lightweight)
-- `/graphify query "X"` — "how does X connect to Y?" "what communities overlap?" (optional, heavier)
-- `/graphify explain "X"` — "tell me everything about X and what surrounds it"
-- `/graphify path "A" "B"` — "trace the shortest connection from A to B"
+The vector pipeline uses **`bge-large-en-v1.5`** (1024-dimensional vectors). Sources in priority order:
 
-### Embedding Model (Vector DB)
+| Priority | Source | Speed | How |
+|-----------|--------|-------|-----|
+| 1 | embed-server socket | ~40ms | `/tmp/embed-server.sock`, uses `sentence-transformers` |
+| 2 | embed-server HTTP sidecar | ~100ms | `host.containers.internal:9001`, Central KB sidecar |
+| 3 | Ollama `bge-large:latest` | ~330ms | `localhost:11434/api/embeddings` |
 
-The preferred vector DB uses **`bge-large:latest`** (1024-dimensional vectors) via Ollama for embeddings. This model is pulled **unconditionally at container startup** — the `entrypoint-wrapper.sh` ensures it is available. Do **not** use `bge-small` (384-dim) — dimension mismatch corrupts the vector index.
+On a fresh clone with no local model pulled, the HTTP embed-server sidecar provides embeddings automatically. No model download required.
 
-> **Graphify fallback:** If graphify is installed and you explicitly want structural queries, no embedding model is needed. Graphify is self-contained.
+> **Never mix embedding dimensions.** Using `nomic-embed-text` (768-dim) against a DB with `bge-large` (1024-dim) entries corrupts the index.
 
 ### distill-and-index on Pi
 
-On Pi, the `distill-and-index` skill **skips memory file writing** — `pi-hermes-memory` handles that. It only writes knowledgebase YAML files and indexes them via the vector DB (preferred) or graphify. This avoids duplicate/conflicting memory entries.
+On Pi, the `distill-and-index` skill **skips memory file writing** — `pi-hermes-memory` handles that. It only writes knowledgebase YAML files and indexes them via Vector DB + Central KB. This avoids duplicate/conflicting memory entries.
 
 ## Rebuilding
 
@@ -317,15 +359,15 @@ After changing `tooling/Dockerfile` or configs under `tooling/`:
 │   └── keybinds.md          # Neovim keybind reference
 └── tooling/
     ├── Dockerfile           # Image build (debian/ollama base)
-    ├── entrypoint-wrapper.sh # First-run setup (nvim plugins, conditional bge-large pull)
+    ├── entrypoint-wrapper.sh # First-run setup
     ├── config/              # Dotfiles (bashrc, nvim, starship, git)
-    ├── scripts/             # Utility scripts (atlassian-cli, embed-server, vector search)
+    ├── scripts/             # Utility scripts
+    │   ├── atlassian-cli.py # Confluence/Jira search
+    │   ├── embed-server.py  # Local embedding daemon
+    │   ├── load-kb-to-memory.py   # Index KB → vector DB
+    │   └── search-kb-memory.py    # Search vector DB
     ├── skill-marketplace/   # Bundled pi skills (distill-rag-bridge)
-    └── skills/              # pi skills (atlassian, coo-advisor, etc.)
+    └── skills/              # pi skills (kb, atlassian, etc.)
 ```
 
-> **Runtime directories** (created locally, gitignored): `graphify-out/`, `knowledgebase/`, `docs/`, `apps/`, `memory/`, `.pi/`.
-
-## Documentation
-
-- [keybinds.md](doc/keybinds.md) — Neovim keybind reference
+> **Runtime directories** (created locally, gitignored): `knowledgebase/`, `docs/`, `apps/`, `memory/`, `.pi/`.
