@@ -163,7 +163,7 @@ def simhash_64(text: str) -> int:
     features = text.lower().split()
     v = [0] * 64
     for feature in features:
-        h = int(hashlib.md5(feature.encode()).hexdigest(), 16)
+        h = int(hashlib.sha256(feature.encode()).hexdigest(), 16)
         for i in range(64):
             if h & (1 << i):
                 v[i] += 1
