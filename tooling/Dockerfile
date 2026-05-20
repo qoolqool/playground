@@ -20,7 +20,7 @@ RUN apt update && apt install --no-install-recommends -y \
     netcat-openbsd procps htop tree git sudo \
     python3 python3-pip python3-venv xdg-utils \
     build-essential libncurses-dev unzip zstd less \
-    nodejs npm libstdc++6 libgcc-s1 && \
+    libstdc++6 libgcc-s1 && \
     rm -rf /var/lib/apt/lists/*
 
 # --- Docker CLI (standalone binary, no daemon) -------------------------
@@ -39,6 +39,22 @@ RUN set -eux; \
     chmod +x /usr/local/bin/docker; \
     rm -rf /tmp/docker.tgz /tmp/docker; \
     docker --version
+
+# Install Node.js 22 (required by pi-coding-agent >=22.19.0)
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+      x86_64)  NODE_ARCH="x64" ;; \
+      aarch64|arm64) NODE_ARCH="arm64" ;; \
+      *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
+    esac; \
+    NODE_VERSION="22.19.0"; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+      -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1; \
+    rm -rf /tmp/node.tar.xz; \
+    node --version; \
+    npm --version
 
 # Global npm tools
 RUN npm install -g typescript pnpm && npm cache clean --force
@@ -87,7 +103,7 @@ RUN set -eux; \
 
 
 # --- PYTHON -----------------------------------------------------------
-RUN pip3 install --break-system-packages --no-cache-dir requests rich click mcp-atlassian pipx && \
+RUN pip3 install --break-system-packages --no-cache-dir requests rich click mcp-atlassian pipx sentence-transformers && \
     pipx ensurepath
 
 # --- USER -------------------------------------------------------------
@@ -143,26 +159,24 @@ RUN mkdir -p /home/tool/.npm-global && \
 # Use the updated namespace
 RUN npm install -g @earendil-works/pi-coding-agent
 
-# Install Superpowers (assuming it's an NPM or Git package)
-# Install ONLY the plus bundle (it includes subagents internally)
-RUN pi install npm:pi-superpowers-plus || true
-
 # Install local distill-rag-bridge from your copied local directory
 RUN pi install /home/tool/.local/share/skill-marketplace/plugins/distill-rag-bridge || true
 
-# Install atlassian skill (Confluence/Jira CLI wrapper)
-COPY --chown=tool:tool skills/atlassian/ /home/tool/.local/share/skill-marketplace/atlassian/
-
 # Install pi-hermes-memory (persistent memory + session search + secret scanning)
 RUN pi install npm:pi-hermes-memory || true
+
+# Install subagent extension and agent definitions
+COPY --chown=tool:tool extensions/logging.ts /home/tool/.pi/agent/extensions/logging.ts
+COPY --chown=tool:tool extensions/subagent/ /home/tool/.pi/agent/extensions/subagent/
+COPY --chown=tool:tool extensions/agents/ /home/tool/.pi/agent/agents/
 
 # --- ATLASSIAN CLI SCRIPT ------------------------------------------------
 COPY --chown=tool:tool scripts/atlassian-cli.py scripts/atlassian-cli.py
 
 # --- KNOWLEDGEBASE VECTOR SEARCH + CENTRAL KB CLI --------------------------------
 # Vector DB scripts and embed-server for local indexing.
-# Embed-server HTTP sidecar at host.containers.internal:9001 is checked first (no local model needed).
-# Falls back to local embed-server socket, then Ollama bge-large.
+# Embed-server HTTP sidecar at host.containers.internal:9001 is checked first.
+# Falls back to local embed-server socket (sentence-transformers via Hugging Face).
 # Central KB CLI (kb) is installed from the skill directory.
 COPY --chown=tool:tool scripts/embed-server.py scripts/embed-server.py
 COPY --chown=tool:tool scripts/load-kb-to-memory.py scripts/load-kb-to-memory.py
@@ -179,7 +193,8 @@ RUN mkdir -p /home/tool/.local/bin && \
 RUN rm -rf /tmp/* /home/tool/.npm /home/tool/.cache/node 2>/dev/null; \
     npm cache clean --force 2>/dev/null || true
 
-# Ollama (standalone binary — embedding model pulled at container start)
+# Ollama (standalone binary — used for LLM inference, not embeddings)
+# Embeddings are served by embed-server.py via Hugging Face sentence-transformers.
 ENV OLLAMA_HOME=/home/tool/.ollama
 
 WORKDIR /project

@@ -14,7 +14,7 @@ import threading
 from sentence_transformers import SentenceTransformer
 
 SOCKET_PATH = "/tmp/embed-server.sock"
-MODEL_NAME = "BAAI/bge-large-en-v1.5"
+MODEL_NAME = "tss-deposium/m2v-bge-m3-1024d"
 
 
 def handle(client: socket.socket, model: SentenceTransformer):
