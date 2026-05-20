@@ -1,6 +1,8 @@
 .DS_Store
 *.sock
 data/
+.agent/
+AGENT.md
 projects/
 *.log
 logs/
@@ -18,7 +20,7 @@ docs/
 cloudflare.pem
 Dockerfile.cloudflare
 **/__pycache__/
-
+scripts
 # Knowledge graph outputs (generated, not source)
 graphify-out/
 .container_name
