@@ -47,15 +47,9 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Pull embedding model for vector DB search.
-# Embed-server HTTP sidecar at host.containers.internal:9001 is checked first.
-# Falls back to local embed-server socket, then Ollama.
-if ! curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any('bge-large' in m['name'] for m in d.get('models',[])) else 1)" 2>/dev/null; then
-  echo "Pulling bge-large embedding model (~670MB)..."
-  ollama pull bge-large:latest &
-else
-  echo "bge-large already pulled"
-fi
+# Embeddings are served by embed-server.py (Model2Vec distilled BGE-M3 via Hugging Face)
+# No Ollama model needed — the 1024-dim model is loaded by the embed daemon.
+# See: scripts/embed-server.py (default: tss-deposium/m2v-bge-m3-1024d, 1024-dim, ~500MB)
 
 
 echo "╔========================================================╗"

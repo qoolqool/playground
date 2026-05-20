@@ -15,7 +15,6 @@ Pre-built PPT page layout templates supporting multiple styles and use cases.
 |---------------|----------|-----------|---------------|-------------|
 | `google_style` | Brand | Annual reports, tech sharing, data presentation | Google Four Colors `#4285F4` `#EA4335` `#FBBC04` `#34A853` | Modern clean, data-driven, ample whitespace |
 | `mckinsey` | Brand | Strategic consulting, executive reports, investment analysis | McKinsey Blue `#005587` | Structured thinking, minimalist premium, MECE principle |
-| `anthropic` | Brand | AI tech sharing, developer conferences, product launches | Anthropic Orange `#D97757` | Tech-forward, conclusion-first, dark cover |
 | `中汽研_常规` | Brand | Product certification, evaluation & testing | Deep Blue `#004098` | [Standard] Professional authority, consulting style |
 | `中汽研_商务` | Brand | Business visits, technical exchanges | Blue Gradient `#003366` | [Business] Modern tech, composed and sophisticated |
 | `中汽研_现代` | Brand | Strategic launches, future tech | Deep Blue `#001529` | [Future] Future Tech, neon glow |
@@ -46,7 +45,6 @@ Templates mimicking **specific well-known brands/institutions** with their exclu
 |----------|-------------|
 | `google_style` | Google Material Design style, four-color brand identity |
 | `mckinsey` | McKinsey consulting style, data-driven and structured |
-| `anthropic` | Anthropic AI style, dark tech-forward aesthetic |
 | `中汽研_常规` | CATARC standard style (v1), suitable for certification and evaluation |
 | `中汽研_商务` | CATARC business style (v2), modern tech business, composed and sophisticated |
 | `中汽研_现代` | CATARC modern style (v3 Future), Future Tech style, deep blue + neon cyan |
