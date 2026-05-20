@@ -50,6 +50,13 @@ if [ "$FORCE_REBUILD" = true ]; then
         $DOCKER rm -f "$CONTAINER_NAME" 2>/dev/null || true
     fi
     rm -f "$CONTAINER_FILE"
+
+    # Ensure submodules are initialized before building
+    if [ -f .gitmodules ]; then
+      echo "Initializing git submodules..."
+      git submodule update --init --recursive
+    fi
+
     echo "Force rebuild - rebuilding image..."
     $DOCKER compose build
 
@@ -98,8 +105,14 @@ if [ -f "$CONTAINER_FILE" ]; then
     fi
 fi
 
-# First run - build and create container
-echo "First run - building tooling container..."
+# First run - ensure submodules are initialized before building
+if [ -f .gitmodules ]; then
+  echo "Initializing git submodules..."
+  git submodule update --init --recursive
+fi
+
+# Then build and create container
+echo "Building tooling container..."
 $DOCKER compose build
 
 # Find available container name (check before creating)

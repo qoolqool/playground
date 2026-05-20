@@ -175,12 +175,10 @@ COPY --chown=tool:tool scripts/atlassian-cli.py scripts/atlassian-cli.py
 
 # --- KNOWLEDGEBASE VECTOR SEARCH + CENTRAL KB CLI --------------------------------
 # Vector DB scripts and embed-server for local indexing.
-# Embed-server HTTP sidecar at host.containers.internal:9001 is checked first.
-# Falls back to local embed-server socket (sentence-transformers via Hugging Face).
-# Central KB CLI (kb) is installed from the skill directory.
+# Search and load scripts are now bundled inside skill-marketplace submodule
+# (plugins/distill-rag-bridge/skills/*/) alongside their SKILL.md files.
+# embed-server.py is a system daemon, kept here.
 COPY --chown=tool:tool scripts/embed-server.py scripts/embed-server.py
-COPY --chown=tool:tool scripts/load-kb-to-memory.py scripts/load-kb-to-memory.py
-COPY --chown=tool:tool scripts/search-kb-memory.py scripts/search-kb-memory.py
 
 # Install kb CLI (Central Knowledge Base)
 COPY --chown=tool:tool skills/install-kb-cli/ /tmp/kb-skill/
