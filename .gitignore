@@ -20,7 +20,7 @@ docs/
 cloudflare.pem
 Dockerfile.cloudflare
 **/__pycache__/
-scripts
+/scripts
 # Knowledge graph outputs (generated, not source)
 graphify-out/
 .container_name
