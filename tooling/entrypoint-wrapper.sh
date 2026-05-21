@@ -9,9 +9,42 @@ git submodule update --init --recursive
 echo "Fixing /project permissions..."
 sudo chown -R tool:tool /project 2>/dev/null || true
 
+# --- Knowledge Pipeline Symlinks ---
+# Create symlinks from tooling/scripts/ and tooling/skills/ into the
+# skill-marketplace submodule. These are NOT tracked in git to avoid
+# dangling symlinks on fresh clones. They're created at container start
+# after submodule init ensures targets exist.
+SCRIPT_SYMLINKS=(
+  "search-kb-memory.py:../skills/search-kb/search-kb-memory.py"
+  "load-kb-to-memory.py:../skills/distill-and-index/load-kb-to-memory.py"
+)
+for entry in "${SCRIPT_SYMLINKS[@]}"; do
+  name="${entry%%:*}"
+  target="${entry#*:}"
+  if [ ! -e "/project/tooling/scripts/$name" ]; then
+    ln -sf "$target" "/project/tooling/scripts/$name"
+    echo "Created symlink: tooling/scripts/$name -> $target"
+  fi
+done
+
+SKILL_SYMLINKS=(
+  "search-kb:../skill-marketplace/plugins/distill-rag-bridge/skills/search-kb"
+  "distill-and-index:../skill-marketplace/plugins/distill-rag-bridge/skills/distill-and-index"
+)
+for entry in "${SKILL_SYMLINKS[@]}"; do
+  name="${entry%%:*}"
+  target="${entry#*:}"
+  if [ ! -e "/project/tooling/skills/$name" ]; then
+    ln -sf "$target" "/project/tooling/skills/$name"
+    echo "Created symlink: tooling/skills/$name -> $target"
+  fi
+done
+
 # --- Pi Skills Bootstrap ---
 # Symlink tooling/skills/ into .pi/skills/ so agent skills survive fresh clones.
 # .pi/ is gitignored, so these symlinks are recreated on every container start.
+# New skills can be installed at runtime via:
+#   ./tooling/scripts/install-skill.sh <github-url>|<local-path>
 SKILLS_SRC="/project/tooling/skills"
 SKILLS_DST="/project/.pi/skills"
 if [ -d "$SKILLS_SRC" ]; then

@@ -1,3 +1,6 @@
 [submodule "tooling/skill-marketplace"]
 	path = tooling/skill-marketplace
 	url = https://github.com/qoolqool/skills.git
+[submodule "tooling/central-kb"]
+	path = tooling/central-kb
+	url = https://github.com/qoolqool/central-kb

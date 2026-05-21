@@ -1,444 +1,162 @@
 # Docker Playground
 
-A containerized development environment for vibe coding with AI agents, supporting both cloud and local models.
+A containerized development environment for vibe coding with AI agents,
+supporting both cloud and local models.
 
 ## Quick Start
 
-> ⚠️ **Important Git Setup**
-> This repository uses submodules. Clone and initialize submodules first:
+> ⚠️ **Important:** this repo uses submodules. Clone and init first:
 > ```bash
-> git clone <repo-url>
+> git clone <repo-url> && cd <repo>
 > git submodule update --init --recursive
 > ```
 
 ```bash
 ./start.sh           # First run: build and enter container
+./start.sh -p        # Pull prebuilt image from GHCR (skips local build)
+./start.sh -k        # Start central-kb, then build and enter container
 ./start.sh           # Subsequent runs: attach to existing container
-./start.sh -f        # Force rebuild
+./start.sh -f        # Force rebuild (after Dockerfile/tooling changes)
+./start.sh -q        # Check prerequisites before building
 ```
 
-The playground works standalone — [Central KB](https://github.com/qoolqool/central-kb) is **optional**. If the central-kb services aren't running, the container gracefully falls back to local Ollama embeddings and local SQLite. See [Central KB Setup](#central-kb-setup) to enable cross-project knowledge sharing.
+For **Podman on macOS**, see [Podman Setup](doc/podman.md).
 
-## Dynamic Configuration
-
-`setenv.sh` auto-detects whether you're running **Docker** or **Podman** and sets the correct environment variables (`DOCKER_HOST`, socket path) used by `docker-compose.yml`. It is sourced automatically by `start.sh`.
-
-- **Docker (Linux):** Uses `unix:///var/run/docker.sock` — no setup needed.
-- **Podman (macOS):** Uses `tcp://<VM_IP>:2375`. Set `PODMAN_VM_IP` before running:
-
-  ```bash
-  export PODMAN_VM_IP=192.168.127.2   # or your Podman VM's IP
-  ./start.sh
-  ```
-
-  You can also add the export to your shell profile (`~/.zshrc`, `~/.bashrc`) so it's always available.
-
-> **Podman on macOS?** You'll need a running Podman VM in rootful mode with the REST API exposed on TCP port 2375. See [`setenv.sh`](setenv.sh) for the logic, or check the [Podman docs](https://podman.io/docs) for VM setup.
-
-## Central KB Setup
-
-The [central-kb](https://github.com/qoolqool/central-kb) server provides cross-project knowledge sharing, simhash dedup, drift detection, and a shared embedding sidecar. It's **optional** — the playground falls back to local Ollama embeddings and local SQLite when it's not running.
-
-### Prerequisites
-
-- Docker or Podman (same runtime you use for the playground)
-- No GPU required — the embed-server uses CPU-only PyTorch
-
-### Start central-kb
-
-```bash
-# Clone both repos side by side
-git clone https://github.com/qoolqool/central-kb
-git clone https://github.com/qoolqool/playground
-
-# Start central-kb first
-cd central-kb && docker compose up -d
-
-# Wait for both services to become healthy
-docker compose ps
-
-# Start playground (auto-detects central-kb on host.containers.internal)
-cd ../playground && ./start.sh
-```
-
-The playground container auto-detects the central-kb services via `host.containers.internal:9000` (API) and `host.containers.internal:9001` (embed sidecar). No additional configuration needed.
-
-### Verify connectivity
-
-```bash
-# From inside the playground container
-curl -s http://host.containers.internal:9000/health
-curl -s http://host.containers.internal:9001/health
-kb search "test" --scope my-project
-```
-
-### CLI reference
-
-The `kb` CLI is pre-installed in the playground container. Full usage: [central-kb README](https://github.com/qoolqool/central-kb#cli-usage).
-
-| Command | Description |
-|---------|-------------|
-| `kb submit --project <name>` | Push local KB entries to central |
-| `kb pull --project <name>` | Pull project entries from central |
-| `kb search "query" --scope <name>` | Hybrid search (cosine + FTS5) |
-| `kb explain "query" --scope <name>` | Structured narrative synthesis |
-| `kb drift --project <name>` | Show cross-project drift report |
-| `kb candidates` | List entries promoted to global |
-| `kb promote <id> approve` | Approve a promotion candidate |
-
-## Pi Coding Agent
-
-The container comes with [pi](https://pi.dev), a terminal-native coding agent, pre-installed along with extensions for persistent memory and knowledge management:
-
-| Feature | What it does | How to use |
-|---------|-------------|------------|
-| **Persistent Memory** | Remembers facts, preferences, and corrections across sessions | `memory_search`, auto-learns from corrections |
-| **Session Search** | Full-text search across all past conversations | `session_search` |
-| **Knowledge Search** | Unified search across local + shared knowledge bases | `search-kb` skill |
-| **Central KB** | Cross-project knowledge sharing via [central-kb](https://github.com/qoolqool/central-kb) server | `kb submit`, `kb search`, `kb explain` |
-| **Atlassian Integration** | Search Confluence and Jira from the terminal | `atlassian-cli.py configure` then `confluence search` |
-| **Skills** | Reusable workflows for the agent (debugging, code review, planning) | Auto-discovered from `tooling/skills/` |
-
-### Proactive Knowledge Search
-
-The agent is configured (via `.pi/AGENT.md`) to **always search the knowledgebase before starting work**. This prevents re-solving previously solved problems. The `search-kb` skill automatically detects available backends and searches all of them:
-
-| Tier | Scope | Command | Embeddings needed |
-|------|-------|---------|-------------------|
-| **Vector DB** | Local (this project) | `search-kb-memory.py "<query>"` | Yes (client-side, for query vector) |
-| **Central KB** | Shared (cross-project) | `kb search "<query>" --scope <project>` | No (server generates query vectors) · [repo](https://github.com/qoolqool/central-kb) |
-
-**In an agent session**, use `kb explain` without `--llm` — the agent itself synthesizes the narrative from structured results, far better than any local model.
-
-## Knowledge Pipeline
-
-Two complementary skills manage the knowledge lifecycle:
-
-### `distill-and-index` — Write Pipeline
-
-Distills conversation insights into durable knowledge files, then indexes them for search.
-
-| Tier | Scope | Index Method | Embeddings |
-|------|-------|-------------|------------|
-| **Vector DB** | Local | `load-kb-to-memory.py` (cosine similarity over 1024-dim vectors) | Yes (embed-server or Ollama) |
-| **Central KB** | Shared | `kb submit` (pushes to [central-kb](https://github.com/qoolqool/central-kb) server) | Yes (for submit; search uses server-side) |
-
-Embedding sources are tried in priority order:
-1. **embed-server socket** (`/tmp/embed-server.sock`) — ~40ms
-2. **embed-server HTTP sidecar** (`host.containers.internal:9001`) — ~100ms
-3. **Ollama** (`localhost:11434`, `bge-large:latest`) — ~330ms
-
-On a fresh clone with no local model pulled, the HTTP embed-server sidecar provides embeddings automatically — no download required.
-
-### `search-kb` — Read Pipeline
-
-Searches all available backends and synthesizes results into a coherent narrative.
-
-```bash
-# Step 1: Local search (if vector DB available)
-python3 /project/scripts/search-kb-memory.py "embedding model" -n decisions
-
-# Step 2: Central KB search (if server available)
-kb search "embedding model" --scope my-project
-
-# Step 3: Structured explain (agent synthesizes narrative)
-kb explain "embedding model" --scope my-project
-```
-
-The agent synthesizes findings from all available backends, tracing how decisions evolved, highlighting cross-project insights, and answering the original query with specific entry references.
-
-## Dual Model Support
-
-The playground supports two model sources:
-
-| Mode | Command | Use case |
-|------|---------|----------|
-| **Cloud** | `ollama launch pi --model <model>:cloud` | Ollama cloud models via browser auth |
-| **Local** | `pi-local <model>` | Local models on host GPU (e.g., gemma4, qwen) |
-
-- **Cloud models** use the container's Ollama server. No API key needed — ollama prompts for browser-based authentication on first run.
-- **Local models** run on the host machine's GPU. The container connects to the host's Ollama via `host.docker.internal:11434`. The host IP is auto-detected at startup and available as `$HOST_IP`. Use the `pi-local` helper:
-
-```bash
-pi-local gemma4:e4b          # Launch pi with a local model
-pi-local qwen3:14b           # Any model on your host's Ollama
-
-# Or manually:
-OLLAMA_HOST=$HOST_IP:11434 ollama launch pi --model <model>
-```
-
-## Multi-Project Workflow
-
-Each project gets its own playground — an isolated container with its own `/project` workspace.
-
-### Creating a new project
-
-```bash
-# Clone the repo for each project
-git clone <repo-url> my-new-project
-cd my-new-project
-
-# Build and enter
-./start.sh
-```
-
-`start.sh` handles naming automatically — if a `tooling` container already exists (from another project), it assigns `tooling-2`, `tooling-3`, and so on. Each project runs in its own container with its own workspace.
-
-### What stays per-project
-
-- Working directory (`/project`) is volume-mounted — files persist on the host
-- Git config, editor settings, and installed plugins live inside the container
-- pi sessions are container-scoped
-
-### What's shared
-
-- The Docker **image** is built once and reused across projects
-- Host Ollama serves local models to all containers simultaneously
-- **Central KB server** shares knowledge across all projects
-
-### Cleaning up
-
-```bash
-# Inside the container, type 'exit' to leave
-
-# On the host — stop and remove the container
-docker stop tooling && docker rm tooling
-
-# Remove the Docker image (forced rebuild next time)
-docker rmi $(docker images -q baseline-tooling)
-```
+---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Tooling Container  ([playground](https://github.com/qoolqool/playground))      │
-│                                                          │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │ Knowledge Pipeline                                  │ │
-│  │                                                     │ │
-│  │  Write:  distill-and-index → knowledgebase/*.yaml  │ │
-│  │           → load-kb-to-memory.py → agentdb.sqlite3  │ │
-│  │           → kb submit ──────────────────────────────────► Central KB API
-│  │                                                     │ │
-│  │  Read:   search-kb skill                            │ │
-│  │           → search-kb-memory.py   (local results)  │ │
-│  │           → kb search/explain  ─────────────────────────► Central KB API
-│  │           → agent synthesizes narrative             │ │
-│  └─────────────────────────────────────────────────────┘ │
-│                                                          │
-│  ┌─────────────────┐                                    │
-│  │ Ollama            │                                    │
-│  │ localhost:11434   │  ◄── embed fallback when          │
-│  │ (local models)   │      central-kb unavailable        │
-│  └─────────────────┘                                    │
-│                                                          │
-│  ┌─────────────────────────────────────────────────────┐ │
-│  │ pi-local → OLLAMA_HOST=$HOST_IP:11434               │ │
-│  │ Neovim · Docker · Starship · Git                    │ │
-│  └─────────────────────────────────────────────────────┘ │
-└──────────────────────────┬───────────────────────────────┘
-                           │
+┌──────────────────────────────────────────────────────┐
+│  Tooling Container                                   │
+│  ┌────────────────────────────────────────────────┐  │
+│  │ Knowledge Pipeline                             │  │
+│  │  Write: distill-and-index → kb submit          │  │
+│  │  Read:  search-kb skill → kb search/explain    │  │
+│  ├────────────────────────────────────────────────┤  │
+│  │ Ollama (localhost:11434) — local/cloud models │  │
+│  │ pi coding agent · Neovim · Docker CLI · Git    │  │
+│  └────────────────────────────────────────────────┘  │
+└────────────────────────┬─────────────────────────────┘
+                         │
          host.containers.internal
-                           │
-         ┌─────────────────┴──────────────────────────────┐
-         │  Central KB   ([central-kb](https://github.com/qoolqool/central-kb))   │
-         │                                                  │
-         │  ┌────────────────────────────────────────────┐ │
-         │  │ central-kb (port 9000)                     │ │
-         │  │ FastAPI + SQLite + FTS5 hybrid search       │ │
-         │  │ Simhash dedup · Drift detection             │ │
-         │  │ Global pattern promotion                    │ │
-         │  └────────────────────────────────────────────┘ │
-         │                                                  │
-         │  ┌────────────────────────────────────────────┐ │
-         │  │ embed-server (port 9001)                   │ │
-         │  │ bge-large-en-v1.5, 1024-dim               │ │
-         │  │ CPU-only PyTorch                           │ │
-         │  └────────────────────────────────────────────┘ │
-         └──────────────────────────────────────────────────┘
-                           ▲        ▲        ▲
-                           │        │        │
-                           ▼        ▼        ▼
-                        proj-A   proj-B   proj-C
-                     (more playground containers)
+                         │
+         ┌────────────────┴──────────────────────┐
+         │  Central KB        (optional)         │
+         │  API :9000 · Embed sidecar :9001      │
+         │  Cross-project knowledge sharing      │
+         └───────────────────────────────────────┘
 ```
 
-> **Optional:** Central KB runs as a separate [`docker compose up`](https://github.com/qoolqool/central-kb) — the playground works without it, falling back to local Ollama embeddings and local SQLite.
+[Knowledge pipeline details](doc/knowledge-pipeline.md)
+[Central KB setup](doc/central-kb.md)
 
-## Docker Cheat Sheet
+## Dual Model Support
 
-Common commands for working with this playground.
+| Mode | Command | Description |
+|------|---------|-------------|
+| **Cloud** | `ollama launch pi --model <model>:cloud` | Ollama cloud models via browser auth |
+| **Local** | `pi-local <model>` | Local models on host GPU |
 
-### Container lifecycle
+See [Models](doc/models.md) for embedding model details.
 
-```bash
-# See running containers
-docker ps
+## Documentation
 
-# See all containers (including stopped)
-docker ps -a
-
-# Start a stopped container
-docker start tooling
-
-# Stop a running container gracefully
-docker stop tooling
-
-# Remove a stopped container
-docker rm tooling
-
-# Force-remove a running container
-docker rm -f tooling
-```
-
-### Images
-
-```bash
-# List images
-docker images
-
-# Remove an image
-docker rmi baseline-tooling
-
-# Rebuild from scratch (no cache)
-docker compose build --no-cache
-```
-
-### Logs and debugging
-
-```bash
-# Follow container logs
-docker compose logs -f
-
-# View last 50 lines
-docker compose logs --tail 50
-
-# Open a shell inside a running container
-docker exec -it tooling bash
-
-# Run a one-off command inside the container
-docker exec tooling ollama list    # list cloud models (container's Ollama)
-```
-
-### Volumes and cleanup
-
-```bash
-# Show Docker disk usage
-docker system df
-
-# Remove all stopped containers, unused networks, dangling images
-docker system prune
-
-# Nuclear option — remove everything (containers, images, volumes)
-docker system prune -a
-```
+| Topic | File |
+|-------|------|
+| Central KB setup & CLI reference | [doc/central-kb.md](doc/central-kb.md) |
+| Podman on macOS/Windows | [doc/podman.md](doc/podman.md) |
+| Model & embedding configuration | [doc/models.md](doc/models.md) |
+| Knowledge pipeline & search | [doc/knowledge-pipeline.md](doc/knowledge-pipeline.md) |
+| Troubleshooting | [doc/troubleshooting.md](doc/troubleshooting.md) |
+| Neovim keybinds | [doc/keybinds.md](doc/keybinds.md) |
 
 ## Included Tools
 
+- **pi** — AI coding agent with memory + session search + skills
 - **Ollama** — Model launcher (cloud + local)
-- **Neovim** — Lazy.nvim config with LSP, Telescope, Treesitter, nvim-tree, markdown preview, Mermaid
+- **Neovim** — Lazy.nvim with LSP, Telescope, Treesitter, Mermaid
+- **kb** — Central Knowledge Base CLI
 - **Docker CLI + Compose** — Socket-mounted from host
-- **Starship** — Custom prompt
-- **Pi** — AI coding agent with memory + session search + skill system
-- **kb** — Central Knowledge Base CLI (submit, pull, search, explain, drift, candidates, conflicts)
-- **embed-server** — Local embedding daemon (bge-large, 1024-dim, ~40ms per vector)
-- **Node.js / npm, Python, Chromium** — Runtime support
+- **Python 3, Node.js 22, Chromium** — Runtime support
+- **embed-server** — Local embedding daemon (bge-large, 1024-dim)
 
-## Atlassian Integration
-
-Search Confluence and Jira from the terminal via the pre-installed `atlassian-cli.py`.
-
-### Setup
+## Quick Reference
 
 ```bash
-python3 /project/tooling/scripts/atlassian-cli.py configure
-```
+# Container lifecycle
+./start.sh              # Build + enter (first run) or attach
+./start.sh -f           # Force rebuild
+./start.sh -p           # Pull prebuilt image from GHCR instead of building
+./start.sh -q           # Check prerequisites before building
+./start.sh -k           # Start central-kb, then build + enter
+# Model selection
+ollama launch pi --model <model>:cloud   # Cloud model
+pi-local <model>                         # Local model on host GPU
 
-Prompts for Jira/Confluence URL, email, and API token. Credentials stored at `~/.secrets/mcp-atlassian.json` (chmod 600, not persisted across rebuilds).
-
-Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens.
-
-### Usage
-
-```bash
-# Confluence — search with CQL
-python3 /project/tooling/scripts/atlassian-cli.py confluence search 'text~"keyword" AND space=TEAM'
-python3 /project/tooling/scripts/atlassian-cli.py confluence get <PAGE_ID>
-
-# Jira — search with JQL
-python3 /project/tooling/scripts/atlassian-cli.py jira search "project=PROJ AND status!=Done"
-python3 /project/tooling/scripts/atlassian-cli.py jira get PROJ-123
-python3 /project/tooling/scripts/atlassian-cli.py jira create PROJ "Summary" "Description"
-```
-
-### Search syntax
-
-| System | Syntax | Example |
-|--------|--------|---------|
-| **CQL** (Confluence) | `text~"keyword"` | `text~"onboarding" AND space=TEAM` |
-| **JQL** (Jira) | `field = value` | `project=PROJ AND status!=Done` |
-
-> Free-text queries fail in CQL — always use operators like `text~`, `space=`, `type=`.
-
-## Keybinds
-
-See [Keybinds](doc/keybinds.md) for Neovim keymaps.
-
-## Knowledge Tools
-
-| Tool | Purpose | Scope | Embeddings needed |
-|------|---------|-------|-------------------|
-| **search-kb** | Unified search across all backends | Local + shared | Only for local vector DB queries |
-| **kb** | Submit, pull, search, explain, drift | Shared ([central-kb](https://github.com/qoolqool/central-kb)) | For submit only (search is server-side) |
-| **distill-and-index** | Distill conversation → knowledgebase → index | Both | Yes (embed-server or Ollama) |
-
-### Embedding Model
-
-The vector pipeline uses **`bge-large-en-v1.5`** (1024-dimensional vectors). Sources in priority order:
-
-| Priority | Source | Speed | How |
-|-----------|--------|-------|-----|
-| 1 | embed-server socket | ~40ms | `/tmp/embed-server.sock`, uses `sentence-transformers` |
-| 2 | embed-server HTTP sidecar | ~100ms | `host.containers.internal:9001`, Central KB sidecar |
-| 3 | Ollama `bge-large:latest` | ~330ms | `localhost:11434/api/embeddings` |
-
-On a fresh clone with no local model pulled, the HTTP embed-server sidecar provides embeddings automatically. No model download required.
-
-> **Never mix embedding dimensions.** Using `nomic-embed-text` (768-dim) against a DB with `bge-large` (1024-dim) entries corrupts the index.
-
-### distill-and-index on Pi
-
-On Pi, the `distill-and-index` skill **skips memory file writing** — `pi-hermes-memory` handles that. It only writes knowledgebase YAML files and indexes them via Vector DB + Central KB. This avoids duplicate/conflicting memory entries.
-
-## Rebuilding
-
-After changing `tooling/Dockerfile` or configs under `tooling/`:
-
-```bash
-./start.sh -f
+# Knowledge pipeline
+kb submit --project <name>               # Push local KB to central
+kb search "query" --scope <name>         # Search central KB
 ```
 
 ## Project Structure
 
 ```
 .
-├── start.sh                 # Container lifecycle script
-├── setenv.sh                # Dynamic env config (Docker vs Podman)
-├── docker-compose.yml       # Container definition
-├── doc/                     # Public documentation
-│   └── keybinds.md          # Neovim keybind reference
-└── tooling/
-    ├── Dockerfile           # Image build (debian/ollama base)
-    ├── entrypoint-wrapper.sh # First-run setup
-    ├── config/              # Dotfiles (bashrc, nvim, starship, git)
-    ├── scripts/             # Utility scripts
-    │   ├── atlassian-cli.py # Confluence/Jira search
-    │   ├── embed-server.py  # Local embedding daemon
-    │   ├── load-kb-to-memory.py   # Index KB → vector DB
-    │   └── search-kb-memory.py    # Search vector DB
-    ├── skill-marketplace/   # Bundled pi skills (distill-rag-bridge)
-    └── skills/              # pi skills (kb, atlassian, etc.)
+├── start.sh              # Container lifecycle CLI
+├── setenv.sh             # Dynamic env config (Docker vs Podman)
+.github/               # CI/CD workflows and Dependabot config
+├── docker-compose.yml    # Container definition
+├── doc/                  # User-facing documentation
+├── tooling/
+│   ├── Dockerfile        # Image build
+│   ├── config/           # Dotfiles (nvim, bash, starship, git)
+│   ├── scripts/          # Utility scripts
+│   ├── skills/           # pi skills (auto-discovered)
+│   └── skill-marketplace/ # Bundled pi plugins (submodule)
+├── knowledgebase/        # Local KB entries (gitignored)
+└── .agent/               # Vector DB, session data (gitignored)
 ```
 
-> **Runtime directories** (created locally, gitignored): `knowledgebase/`, `docs/`, `apps/`, `memory/`, `.pi/`.
+## Roadmap
+
+See [AGENT.md](AGENT.md) for the full feature roadmap with prioritization.
+
+---
+
+## CI/CD & Prebuilt Images
+
+The tooling image is automatically built and pushed to **GitHub Container Registry**
+when changes are pushed to `main` that affect the Dockerfile, config, scripts, or extensions.
+
+### Using the Prebuilt Image
+
+```bash
+./start.sh -p       # Pull latest image from GHCR instead of building locally
+```
+
+On first run, this downloads the image in seconds instead of building for 5-15 minutes.
+The image is built for both `linux/amd64` and `linux/arm64` - the correct architecture
+is selected automatically via multi-arch manifests.
+
+### Manual Build Trigger
+
+If you need to trigger a build without pushing to `main`:
+1. Go to **Actions > Build & Push Tooling Image > Run workflow**
+2. Optionally specify a custom tag
+
+### Dependency Scanning
+
+- **Dependabot:** Runs weekly, scanning GitHub Actions workflows and the base Docker image.
+  Opens automated PRs for version updates.
+- **Trivy:** Runs weekly, scanning the built image for HIGH/CRITICAL vulnerabilities in
+  all packages (including inline pip/npm installs). Results appear in the GitHub Security tab.
+
+### Pulling Without Authentication
+
+The image is public - no GHCR login is required for `./start.sh -p`. If you hit
+rate limits (anonymous: 100 pulls/6h per IP), authenticate with:
+
+```bash
+docker login ghcr.io
+```
