@@ -1,0 +1,74 @@
+name: Security Scan (Trivy)
+
+on:
+  schedule:
+    # Weekly: Sunday at 02:00 Asia/Kuala_Lumpur (Saturday 18:00 UTC)
+    - cron: '0 18 * * 6'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to scan (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-tooling
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image for scanning
+        run: |
+          TAG="${{ inputs.image_tag || 'latest' }}"
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG
+          echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG" >> $GITHUB_ENV
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'  # Don't fail CI on vulns (advisory only for now)
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy'
+
+      - name: Generate scan summary
+        shell: python3
+        run: |
+          import json, os
+          with open('trivy-results.sarif') as f:
+              data = json.load(f)
+          results = data.get('runs', [{}])[0].get('results', [])
+          sev_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+          for r in results:
+              sev = r.get('properties', {}).get('severity', 'UNKNOWN')
+              sev_counts[sev] = sev_counts.get(sev, 0) + 1
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write('## Trivy Scan Results\n\n')
+              out.write('| Severity | Count |\n')
+              out.write('|----------|-------|\n')
+              for sev in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
+                  out.write(f'| {sev} | {sev_counts[sev]} |\n')
