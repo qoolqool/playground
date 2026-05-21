@@ -43,6 +43,8 @@ done
 # --- Pi Skills Bootstrap ---
 # Symlink tooling/skills/ into .pi/skills/ so agent skills survive fresh clones.
 # .pi/ is gitignored, so these symlinks are recreated on every container start.
+# New skills can be installed at runtime via:
+#   ./tooling/scripts/install-skill.sh <github-url>|<local-path>
 SKILLS_SRC="/project/tooling/skills"
 SKILLS_DST="/project/.pi/skills"
 if [ -d "$SKILLS_SRC" ]; then
