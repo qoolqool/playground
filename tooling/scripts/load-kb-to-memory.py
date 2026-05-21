@@ -1,0 +1,1 @@
+../skills/distill-and-index/load-kb-to-memory.py
