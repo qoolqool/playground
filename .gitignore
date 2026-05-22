@@ -14,6 +14,7 @@ logs/
 data/
 __pycache__/
 **/__pycache__/
+.central-kb-ready
 
 # =============================================================================
 # Secrets & Environment-Specific Configuration
@@ -68,3 +69,7 @@ tarball/
 
 # Scripts (if generated or environment-specific)
 /scripts
+
+# Entrypoint-generated scripts (symlinks from .pi/skills/)
+tooling/scripts/load-kb-to-memory.py
+tooling/scripts/search-kb-memory.py
