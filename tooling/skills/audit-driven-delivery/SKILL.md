@@ -1,9 +1,9 @@
 ---
 name: add-audit-driven-delivery
 description: "End-to-end delivery pipeline for DinD + Docker Compose microservices: AUDIT → DESIGN → PLAN → EXECUTE → HARDEN. Consolidates brainstorming, DDD, SPARC, TDD, and engineering methodology with mandatory phase gates and DinD-aware decision trees."
-version: 2
+version: 3
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-22
 ---
 # ADD — Audit-Driven Delivery Pipeline
 
@@ -17,6 +17,57 @@ The end-to-end delivery workflow that produced the x402 PoC: 9 microservices, 3 
 - When you need an audit trail from "what exists" through "shipped and verified"
 
 **Do NOT use** when: fixing a trivial bug (one-line change), performing routine maintenance (version bumps), or doing exploratory prototyping (though prototyping may feed into Phase 0 audit).
+
+## Mandatory Skill Usage
+
+**This skill ORCHESTRATES other skills — it does NOT replace them.** When the audit or design phase identifies a need, you MUST use the appropriate reference skill:
+
+| If the task involves... | You MUST use this skill |
+|-------------------------|------------------------|
+| DinD + Compose setup on Podman | `dind-compose-setup` |
+| Bootstrap CLI + tiered rebuilds | `compose-bootstrap-cli` |
+| Multi-network isolation | `compose-multi-network-isolation` |
+| Test-runner container | `compose-test-runner-container` |
+| 3-layer port forwarding | `dind-port-forwarding` |
+| Container discovery (varying names) | `dind-discover-containers-by-pattern` |
+| TDD for infrastructure | `tdd-dind-compose-infra` |
+| 3-document workflow | `design-impl-result-docs` |
+| Observability dashboard | `compose-observe-dashboard` |
+| Prometheus metrics | `compose-prometheus-metrics-pipeline` |
+| Subagent-driven implementation | `subagent-driven-development` |
+| Finishing a branch | `finishing-a-development-branch` |
+
+**DinD-Specific Requirement:** If the user mentions "DinD", "Docker-in-Docker", or the project has a DinD setup, you MUST follow the DinD-specific patterns in this skill and reference the appropriate sub-skills above. Do NOT explore alternative solutions.
+
+## TDD Requirement
+
+**Every implementation task MUST include unit tests:**
+
+- **New functions/features:** Write the test FIRST (Red), then implement (Green), then refactor
+- **Modifying existing code:** Run existing tests before and after to ensure no regression
+- **Infrastructure additions:** Use `tdd-dind-compose-infra` pattern — write failing integration tests from test-runner first
+- **Test location:** Tests go in `tests/` directory, run from test-runner container
+- **Test verification:** Each test must verify specific, observable behavior
+
+**No exceptions:** If a task cannot be tested, it should not be implemented. Document why testing is impossible as a risk.
+
+## Subagent Requirement for Implementation
+
+**Phase 3 (EXECUTE) MUST use subagents for implementation** when:
+- Tasks are mostly independent (can run in parallel)
+- Each task takes >5 minutes of work
+- Multiple files or services are involved
+
+**Subagent pattern:**
+1. Dispatch implementer subagent per task (use `subagent-driven-development`)
+2. Two-stage review after each task: spec compliance → code quality
+3. Fix issues before proceeding to next task
+4. Final review after all tasks complete
+
+**Do NOT use subagents for:**
+- Trivial one-line changes
+- Tightly coupled tasks requiring constant coordination
+- Exploratory debugging
 
 ## DinD Context
 
@@ -34,18 +85,22 @@ This methodology assumes a **Docker-in-Docker** development environment where:
 
 **Key sub-skills that handle the technical details (ADD routes to them):**
 
-| Concern | Skill |
-|---------|-------|
-| DinD + Compose setup on Podman | `dind-compose-setup` |
-| Bootstrap CLI + tiered rebuilds | `compose-bootstrap-cli` |
-| Multi-network isolation | `compose-multi-network-isolation` |
-| Test-runner container | `compose-test-runner-container` |
-| 3-layer port forwarding | `dind-port-forwarding` |
-| Container discovery (varying names) | `dind-discover-containers-by-pattern` |
-| TDD Red-Green-Refactor for infra | `tdd-dind-compose-infra` |
-| 3-document workflow | `design-impl-result-docs` |
-| Observability dashboard | `compose-observe-dashboard` |
-| Prometheus metrics pipeline | `compose-prometheus-metrics-pipeline` |
+| Concern | Skill | When to Use |
+|---------|-------|-------------|
+| DinD + Compose setup on Podman | `dind-compose-setup` | Greenfield setup, Podman configuration |
+| Bootstrap CLI + tiered rebuilds | `compose-bootstrap-cli` | Creating or extending bootstrap.sh |
+| Multi-network isolation | `compose-multi-network-isolation` | New network segments, ACL services |
+| Test-runner container | `compose-test-runner-container` | Cross-network testing setup |
+| 3-layer port forwarding | `dind-port-forwarding` | Exposing services to host |
+| Container discovery (varying names) | `dind-discover-containers-by-pattern` | Dynamic container name resolution |
+| TDD Red-Green-Refactor for infra | `tdd-dind-compose-infra` | Adding Jaeger, Redis, databases |
+| 3-document workflow | `design-impl-result-docs` | Full traceability chain |
+| Observability dashboard | `compose-observe-dashboard` | Terminal-based health dashboard |
+| Prometheus metrics pipeline | `compose-prometheus-metrics-pipeline` | Adding metrics to services |
+| Subagent-driven implementation | `subagent-driven-development` | Phase 3 execution with fresh subagents |
+| Finishing a development branch | `finishing-a-development-branch` | Merge/PR/cleanup decisions |
+
+**MANDATORY:** When Phase 0 audit or Phase 1 design identifies a need matching the table above, you MUST explicitly invoke the corresponding skill. Do NOT reinvent solutions.
 
 ## Core Principle: Audit Before You Build
 
@@ -199,24 +254,24 @@ Numbered list of testable outcomes.
 
 **Break the design into bite-sized TDD tasks** (each task is 2-5 minutes of work):
 
+**TDD REQUIREMENT:** Every task MUST include tests:
+
 ```markdown
 ### Task N: [Component Name]
 
-**Files:**
-- Create: `exact/path/to/file.py`
-- Modify: `exact/path/to/existing.py`
-- Test: `tests/exact/path/to/test.py`
+**Test File:** `tests/exact/path/to/test.py`
 
-**Step 1: Write the failing test**
+**Step 1: Write the failing test FIRST**
 ```python
 def test_specific_behavior():
+    """Test must verify observable behavior, not implementation."""
     result = function(input)
     assert result == expected
 ```
 
 **Step 2: Run test to verify it fails**
-Run: `pytest tests/path/test.py::test_name -v`
-Expected: FAIL with "function not defined"
+Run: `docker exec DIND docker exec TEST_RUNNER python3 -m pytest tests/path/test.py::test_name -v`
+Expected: FAIL with clear reason (function not defined, import error, etc.)
 
 **Step 3: Write minimal implementation**
 ```python
@@ -225,11 +280,15 @@ def function(input):
 ```
 
 **Step 4: Run test to verify it passes**
-Run: `pytest tests/path/test.py::test_name -v`
 Expected: PASS
 
-**Step 5: Commit**
+**Step 5: Commit with test + implementation together**
 ```
+
+**Files:**
+- Create: `exact/path/to/file.py`
+- Modify: `exact/path/to/existing.py`
+- Test: `tests/exact/path/to/test.py` (REQUIRED)
 
 **Rules for tasks:**
 - Each task is independently verifiable (run a command, see pass/fail)
@@ -239,10 +298,12 @@ Expected: PASS
 - Include the final checklist of all files changed
 
 **DinD-specific planning patterns:**
-- **Infrastructure TDD** (new compose service, observability): Use `tdd-dind-compose-infra` pattern — write failing integration tests from test-runner first
-- **Container discovery**: Do not hardcode container names — use `docker ps --format` filters (see `dind-discover-containers-by-pattern`)
-- **Rebuild order**: `docker compose down`, rebuild images, `docker compose up -d --build` (see `compose-bootstrap-cli` tiered rebuild section)
-- **3-document workflow**: Use `design-impl-result-docs` pattern for the full traceability chain
+- **Infrastructure TDD** (new compose service, observability): Use `tdd-dind-compose-infra` pattern — write failing integration tests from test-runner first. Tests should fail with "connection refused" or "DNS doesn't resolve" before adding the service.
+- **Container discovery**: Do not hardcode container names — use `docker ps --format` filters (see `dind-discover-containers-by-pattern`). Include discovery commands in the plan.
+- **Rebuild order**: `docker compose down`, rebuild images, `docker compose up -d --build` (see `compose-bootstrap-cli` tiered rebuild section). Include exact commands in the plan.
+- **3-document workflow**: Use `design-impl-result-docs` pattern for the full traceability chain. Plan must reference where the implementation result doc will be written.
+
+**Subagent Planning:** If tasks are independent, plan for subagent execution (see Phase 3). Each task should be self-contained with clear success criteria.
 
 **Artifact:** Implementation plan at `docs/plans/YYYY-MM-DD-<topic>-impl.md`
 
@@ -252,15 +313,41 @@ Expected: PASS
 
 ### Phase 3: EXECUTE — "Build it"
 
-**Goal:** Implement the plan incrementally with TDD, batching for human review checkpoints.
+**Goal:** Implement the plan incrementally with TDD, using subagents for independent tasks.
 
-**Process:**
+**SUBAGENT REQUIREMENT:**
+
+**Use subagents when:**
+- Tasks are mostly independent (can run in parallel without conflicts)
+- Each task takes >5 minutes of work
+- Multiple files or services are involved
+- The plan explicitly marks tasks as "subagent-ready"
+
+**Do NOT use subagents when:**
+- Tasks are tightly coupled (require constant coordination)
+- Exploratory debugging or investigation
+- Trivial one-line changes
+
+**When using subagents, you MUST:**
+1. Use the `subagent-driven-development` skill
+2. Dispatch one implementer subagent per task
+3. Run two-stage review after each task (spec compliance → code quality)
+4. Fix all issues before proceeding to next task
+5. Run final review after all tasks complete
+
+**Manual Execution (when subagents not appropriate):**
 
 1. **Execute in batches** — default 3 tasks per batch, then pause for feedback.
 2. **For each task:** Follow the plan steps exactly (write failing test → verify fail → implement → verify pass → commit).
 3. **Root-cause fix on failures** — do NOT fix symptoms. When a test fails: read the error carefully, trace the actual call chain, do not ignore errors.
 4. **Incremental-build:** Wire one integration, test it, fix what breaks, THEN wire the next. Do not wire all clients then test.
 5. **Document as you go:** Every discovered gotcha, every non-obvious behavior, every workaround — record it.
+
+**TDD ENFORCEMENT:**
+- Every task MUST start with a failing test
+- Tests must run from the test-runner container inside DinD
+- No task is complete until tests pass
+- If a task cannot be tested, STOP and report (do not implement untestable code)
 
 **DinD execution context — ALL commands run inside the Docker-in-Docker environment:**
 
@@ -356,6 +443,9 @@ Expected: PASS
 
 - **Skipping Phase 0 (Audit) is the most common failure mode** — you will design something that already exists, or miss a critical constraint. Always audit first.
 - **Greenfield vs brownfield confusion** — Phase 0 explicitly branches on this. If you don't check, you'll design services for infrastructure that doesn't exist yet.
+- **NOT using reference skills** — This skill ORCHESTRATES other skills. When the audit identifies a need (DinD setup, multi-network, TDD for infra, etc.), you MUST use the appropriate reference skill. Do NOT reinvent solutions.
+- **NOT using subagents for independent tasks** — Phase 3 requires subagents when tasks are independent. If you're manually implementing multiple independent tasks, you're doing it wrong. Use `subagent-driven-development`.
+- **Skipping TDD** — Every task MUST start with a failing test. No exceptions. If a task cannot be tested, it should not be implemented. Report it as a risk.
 - **Hardcoding container names** — Docker Compose auto-prefixes names with the project directory. Always discover containers by pattern, not hardcoded names. See `dind-discover-containers-by-pattern`.
 - **Writing the plan before the design is approved** wastes effort on a plan for an approach that gets changed in review.
 - **Not updating the design/plan after discovery** — if Phase 3 reveals something that invalidates the design, go BACK to Phase 1, don't forge ahead with a bad design.
@@ -378,3 +468,6 @@ After applying ADD, confirm:
 8. Gotchas discovered during execution are documented somewhere findable
 9. For new services: network placement was documented and compose entry was created
 10. `bootstrap.sh verify` passes after completion
+11. **TDD compliance:** Every task has corresponding tests that run from test-runner
+12. **Subagent usage:** Independent tasks were executed via subagents with two-stage review
+13. **Reference skill usage:** Appropriate reference skills were invoked (documented in plan/result)
