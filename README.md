@@ -1,4 +1,4 @@
-# Docker Playground
+# Containerize AI Assist Playground
 
 A containerized development environment for vibe coding with AI agents,
 supporting both cloud and local models.
@@ -34,14 +34,14 @@ For **Podman on macOS**, see [Podman Setup](doc/podman.md).
 │  │  Write: distill-and-index → kb submit          │  │
 │  │  Read:  search-kb skill → kb search/explain    │  │
 │  ├────────────────────────────────────────────────┤  │
-│  │ Ollama (localhost:11434) — local/cloud models │  │
+│  │ Ollama (localhost:11434) — local/cloud models  │  │
 │  │ pi coding agent · Neovim · Docker CLI · Git    │  │
 │  └────────────────────────────────────────────────┘  │
 └────────────────────────┬─────────────────────────────┘
                          │
          host.containers.internal
                          │
-         ┌────────────────┴──────────────────────┐
+         ┌───────────────┴───────────────────────┐
          │  Central KB        (optional)         │
          │  API :9000 · Embed sidecar :9001      │
          │  Cross-project knowledge sharing      │
@@ -117,10 +117,6 @@ kb search "query" --scope <name>         # Search central KB
 ├── knowledgebase/        # Local KB entries (gitignored)
 └── .agent/               # Vector DB, session data (gitignored)
 ```
-
-## Roadmap
-
-See [AGENT.md](AGENT.md) for the full feature roadmap with prioritization.
 
 ---
 

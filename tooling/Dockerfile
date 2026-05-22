@@ -14,6 +14,16 @@ RUN apt update && apt install --no-install-recommends -y ca-certificates && \
     mkdir -p /usr/local/sbin /usr/local/bin && \
     rm -rf /var/lib/apt/lists/*
 
+# --- Cloudflare Gateway CA (optional, environment-specific) ---
+# Copy if exists in build context, otherwise skip without failing
+COPY --chown=tool:tool cloudflare-gateway.crt /tmp/cloudflare-gateway.crt 2>/dev/null || true
+RUN if [ -f /tmp/cloudflare-gateway.crt ]; then \
+      cp /tmp/cloudflare-gateway.crt /usr/local/share/ca-certificates/ && \
+      update-ca-certificates --fresh; \
+    else \
+      echo "⚠ No cloudflare-gateway.crt - using system CAs only"; \
+    fi
+
 # --- Core packages ----------------------------------------------------
 RUN apt update && apt install --no-install-recommends -y \
     curl wget jq gnupg bash iputils-ping dnsutils iproute2 \

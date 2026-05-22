@@ -1,0 +1,11 @@
+-----BEGIN CERTIFICATE-----
+# This is an example placeholder.
+# Replace with your actual Cloudflare Gateway CA certificate.
+# Download from: Cloudflare Zero Trust Dashboard → Settings → Certificates
+#
+# Your certificate should look like:
+# -----BEGIN CERTIFICATE-----
+# MIIDXTCCAkWgAwIBAgIJAKL...
+# ...
+# -----END CERTIFICATE-----
+-----END CERTIFICATE-----

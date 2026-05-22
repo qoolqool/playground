@@ -1,26 +1,70 @@
+# =============================================================================
+# OS / Editor Files
+# =============================================================================
 .DS_Store
+*.swp
+.vscode/
+
+# =============================================================================
+# Runtime & Generated Files
+# =============================================================================
 *.sock
-data/
-.agent/
-AGENT.md
-projects/
 *.log
 logs/
-.vscode/
-*.swp
-DEBUG_STATE.md
-tarball/
-knowledgebase/
-app*/
-# Scratch notes
-memory/
-.pi/
-.claude/
-docs/
-cloudflare.pem
-Dockerfile.cloudflare
+data/
+__pycache__/
 **/__pycache__/
-/scripts
-# Knowledge graph outputs (generated, not source)
+
+# =============================================================================
+# Secrets & Environment-Specific Configuration
+# =============================================================================
+# CA Certificates (keep .example files)
+cloudflare.pem
+*.crt
+!*.crt.example
+
+# Environment files
+Dockerfile.cloudflare
+.env
+.env.*
+!.env.example
+
+# Private documentation
+AGENT.md
+
+# =============================================================================
+# AI Agent & Session Data
+# =============================================================================
+# Pi Coding Agent
+.agent/
+.pi/
+
+# Claude Code
+.claude/
+
+# Session memory and scratch notes
+memory/
+DEBUG_STATE.md
+
+# =============================================================================
+# Project-Specific Directories
+# =============================================================================
+# Application directories
+projects/
+app*/
+
+# Documentation (generated or separate)
+docs/
+
+# Knowledge management
+knowledgebase/
 graphify-out/
+
+# Build artifacts
+tarball/
+
+# Container metadata
 .container_name
+
+# Scripts (if generated or environment-specific)
+/scripts
