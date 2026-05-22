@@ -16,7 +16,7 @@ RUN apt update && apt install --no-install-recommends -y ca-certificates && \
 
 # --- Cloudflare Gateway CA (optional, environment-specific) ---
 # Copy if exists in build context, otherwise skip without failing
-COPY --chown=tool:tool cloudflare-gateway.crt /tmp/cloudflare-gateway.crt 2>/dev/null || true
+COPY cloudflare-gateway.cr[t] /tmp/
 RUN if [ -f /tmp/cloudflare-gateway.crt ]; then \
       cp /tmp/cloudflare-gateway.crt /usr/local/share/ca-certificates/ && \
       update-ca-certificates --fresh; \
@@ -26,10 +26,10 @@ RUN if [ -f /tmp/cloudflare-gateway.crt ]; then \
 
 # --- Core packages ----------------------------------------------------
 RUN apt update && apt install --no-install-recommends -y \
-    curl wget jq gnupg bash iputils-ping dnsutils iproute2 \
+    curl wget jq gnupg bash iputils-ping iproute2 \
     netcat-openbsd procps htop tree git sudo \
     python3 python3-pip python3-venv xdg-utils \
-    build-essential libncurses-dev unzip zstd less \
+    unzip zstd less zstd \
     libstdc++6 libgcc-s1 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -50,7 +50,7 @@ RUN set -eux; \
     rm -rf /tmp/docker.tgz /tmp/docker; \
     docker --version
 
-# Install Node.js 22 (required by pi-coding-agent >=22.19.0)
+# Install Node.js 24 (required by pi-coding-agent >=22.19.0)
 RUN set -eux; \
     ARCH="$(uname -m)"; \
     case "$ARCH" in \
@@ -58,13 +58,14 @@ RUN set -eux; \
       aarch64|arm64) NODE_ARCH="arm64" ;; \
       *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
     esac; \
-    NODE_VERSION="22.19.0"; \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
-      -o /tmp/node.tar.xz; \
-    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1; \
-    rm -rf /tmp/node.tar.xz; \
+    NODE_VERSION="24.16.0"; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz" \
+      -o /tmp/node.tar.gz; \
+    tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1; \
+    rm -rf /tmp/node.tar.gz; \
     node --version; \
     npm --version
+
 
 # Global npm tools
 RUN npm install -g typescript pnpm && npm cache clean --force
@@ -113,7 +114,7 @@ RUN set -eux; \
 
 
 # --- PYTHON -----------------------------------------------------------
-RUN pip3 install --break-system-packages --no-cache-dir requests rich click mcp-atlassian pipx sentence-transformers && \
+RUN pip3 install --break-system-packages --no-cache-dir requests rich click mcp-atlassian pipx && \
     pipx ensurepath
 
 # --- USER -------------------------------------------------------------
@@ -184,11 +185,9 @@ COPY --chown=tool:tool extensions/agents/ /home/tool/.pi/agent/agents/
 COPY --chown=tool:tool scripts/atlassian-cli.py scripts/atlassian-cli.py
 
 # --- KNOWLEDGEBASE VECTOR SEARCH + CENTRAL KB CLI --------------------------------
-# Vector DB scripts and embed-server for local indexing.
-# Search and load scripts are now bundled inside skill-marketplace submodule
-# (plugins/distill-rag-bridge/skills/*/) alongside their SKILL.md files.
-# embed-server.py is a system daemon, kept here.
-COPY --chown=tool:tool scripts/embed-server.py scripts/embed-server.py
+# Central KB CLI only. Local vector DB removed in favor of graphify/Ollama.
+# kb-cli.py is bundled inside skill-marketplace submodule.
+# Embeddings: Central KB embed-server HTTP sidecar or Ollama bge-large:latest fallback.
 
 # Install kb CLI (Central Knowledge Base)
 COPY --chown=tool:tool skills/install-kb-cli/ /tmp/kb-skill/
@@ -197,12 +196,16 @@ RUN mkdir -p /home/tool/.local/bin && \
     chmod +x /home/tool/.local/bin/kb && \
     rm -rf /tmp/kb-skill
 
-# Cleanup: remove npm/pnpm caches and tmp artifacts
-RUN rm -rf /tmp/* /home/tool/.npm /home/tool/.cache/node 2>/dev/null; \
-    npm cache clean --force 2>/dev/null || true
+USER root
+# Cleanup: remove npm/pnpm caches, tmp artifacts, and build leftovers
+RUN rm -rf /tmp/* /home/tool/.npm /home/tool/.cache/node /home/tool/.cache/pip 2>/dev/null; \
+    npm cache clean --force 2>/dev/null || true; \
+    find /usr/local/lib/python3* -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true; \
+    apt-get autoremove -y --purge && rm -rf /var/lib/apt/lists/*
 
-# Ollama (standalone binary — used for LLM inference, not embeddings)
-# Embeddings are served by embed-server.py via Hugging Face sentence-transformers.
+USER tool
+
+# Ollama (standalone binary — used for LLM inference and embeddings)
 ENV OLLAMA_HOME=/home/tool/.ollama
 
 WORKDIR /project

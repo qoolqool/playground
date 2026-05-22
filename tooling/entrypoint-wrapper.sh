@@ -15,6 +15,24 @@ sudo chown -R tool:tool /project 2>/dev/null || true
 # dangling symlinks on fresh clones. They're created at container start
 # after submodule init ensures targets exist.
 
+# Cleanup: Remove global skill-marketplace plugins that conflict with project submodule
+# This prevents "skill collision" warnings when the same plugin exists in both locations
+GLOBAL_MARKETPLACE="$HOME/.local/share/skill-marketplace/plugins"
+PROJECT_MARKETPLACE="/project/tooling/skill-marketplace/plugins"
+
+if [ -d "$PROJECT_MARKETPLACE" ] && [ -d "$GLOBAL_MARKETPLACE" ]; then
+  for plugin_dir in "$PROJECT_MARKETPLACE"/*/; do
+    if [ -d "$plugin_dir" ]; then
+      plugin_name=$(basename "$plugin_dir")
+      global_plugin="$GLOBAL_MARKETPLACE/$plugin_name"
+      if [ -d "$global_plugin" ]; then
+        rm -rf "$global_plugin"
+        echo "Removed conflicting global plugin: $global_plugin"
+      fi
+    fi
+  done
+fi
+
 # Cleanup: Remove old symlinks in skill-marketplace (created by pi install)
 MARKETPLACE_SKILLS="/project/tooling/skill-marketplace/plugins/distill-rag-bridge/skills"
 if [ -d "$MARKETPLACE_SKILLS" ]; then
@@ -66,24 +84,35 @@ done
 SKILLS_SRC="/project/tooling/skills"
 SKILLS_DST="/project/.pi/skills"
 
-# Cleanup: Remove circular symlinks inside skill directories (created by pi install)
-# These are self-referential symlinks like: skill-name/skill-name -> ../skill-name/
-if [ -d "$SKILLS_SRC" ]; then
-  for skill_dir in "$SKILLS_SRC"/*/; do
-    if [ -d "$skill_dir" ]; then
-      skill_name=$(basename "$skill_dir")
-      circular_link="$skill_dir$skill_name"
-      if [ -L "$circular_link" ]; then
-        target=$(readlink "$circular_link")
-        # Check if it's a circular symlink (points to parent or self)
-        if [ "$target" = "$skill_dir" ] || [ "$target" = "../$skill_name/" ] || [ "$target" = "../$skill_name" ]; then
+# Cleanup: Remove ALL symlinks inside skill directories (circular or otherwise)
+# These are created by pi install and cause "skill collision" warnings
+# Run cleanup TWICE: before and after bootstrap to catch runtime-created symlinks
+cleanup_circular_symlinks() {
+  local src_dir="$1"
+  if [ -d "$src_dir" ]; then
+    for skill_dir in "$src_dir"/*/; do
+      if [ -d "$skill_dir" ]; then
+        skill_name=$(basename "$skill_dir")
+        # Remove circular symlink (skill_name -> parent dir)
+        circular_link="$skill_dir$skill_name"
+        if [ -L "$circular_link" ]; then
           rm -f "$circular_link"
           echo "Removed circular symlink: $circular_link"
         fi
+        # Remove any other symlinks in skill directory root (including hidden)
+        for link in "$skill_dir"* "$skill_dir".*; do
+          if [ -L "$link" ] && [ "$(basename "$link")" != "." ] && [ "$(basename "$link")" != ".." ]; then
+            rm -f "$link"
+            echo "Removed symlink from skill directory: $link"
+          fi
+        done
       fi
-    fi
-  done
-fi
+    done
+  fi
+}
+
+# Pre-cleanup: remove any existing circular symlinks from previous runs
+cleanup_circular_symlinks "$SKILLS_SRC"
 
 if [ -d "$SKILLS_SRC" ]; then
   mkdir -p "$SKILLS_DST"
@@ -96,6 +125,9 @@ if [ -d "$SKILLS_SRC" ]; then
   synced=$(ls -1d "$SKILLS_DST"/*/ 2>/dev/null | wc -l | tr -d ' ')
   echo "Bootstrapped $synced pi skills from tooling/skills/"
 fi
+
+# Post-cleanup: remove any circular symlinks that pi may have created at runtime
+cleanup_circular_symlinks "$SKILLS_SRC"
 
 # Ensure nvim plugins & tools are installed (first run only)
 if [ ! -d "${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy" ]; then
@@ -118,9 +150,11 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Embeddings are served by embed-server.py (Model2Vec distilled BGE-M3 via Hugging Face)
-# No Ollama model needed — the 1024-dim model is loaded by the embed daemon.
-# See: scripts/embed-server.py (default: tss-deposium/m2v-bge-m3-1024d, 1024-dim, ~500MB)
+# Embeddings: Central KB embed-server HTTP sidecar (bge-large, 1024-dim)
+# or Ollama bge-large:latest as fallback. No local embed-server needed.
+# Pull the embedding model in the background so it's ready when the sidecar is unreachable.
+# Ollama pull is idempotent — returns immediately if the model already exists.
+ollama pull bge-large:latest >/dev/null 2>&1 &
 
 
 echo "╔========================================================╗"

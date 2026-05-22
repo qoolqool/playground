@@ -21,9 +21,8 @@ Playground Container
 │   → Agent synthesizes narrative
 │
 └── Embedding Sources (priority order)
-    1. embed-server socket            ~40ms
-    2. embed-server HTTP (sidecar)    ~100ms
-    3. Ollama bge-large               ~330ms
+    1. Central KB embed-server HTTP    ~100ms  (BAAI/bge-large-en-v1.5, 1024-dim)
+    2. Ollama bge-large:latest          ~330ms  (fallback, auto-pulls if needed)
 ```
 
 ## Tools
@@ -32,7 +31,7 @@ Playground Container
 |------|---------|-------|-------------------|
 | **search-kb** | Unified search across all backends | Local + shared | Only for local vector DB queries |
 | **kb** | Submit, pull, search, explain, drift | Shared (central-kb) | For submit only (search is server-side) |
-| **distill-and-index** | Distill conversation → knowledgebase → index | Both | Yes (embed-server or Ollama) |
+| **distill-and-index** | Distill conversation → knowledgebase → index | Both | Yes (sidecar or Ollama) |
 
 ## Proactive Knowledge Search
 
@@ -46,10 +45,11 @@ work**. The `search-kb` skill automatically detects available backends:
 
 ## Embedding Details
 
-- **Model:** `bge-large-en-v1.5` (1024-dimensional)
-- Sources tried in priority: socket (~40ms) → HTTP (~100ms) → Ollama (~330ms)
-- On a fresh clone, the HTTP embed-server sidecar provides embeddings automatically
-- No model download required (handled by central-kb embed-server)
+- **Model:** `BAAI/bge-large-en-v1.5` (1024-dim) everywhere
+- All sources produce compatible 1024-dim vectors (bge-large family)
+- Fallback order: Central KB HTTP sidecar (~100ms) → Ollama (~330ms)
+- No local sentence-transformers or embed-server daemon needed in the tooling container
+- The Central KB sidecar handles embeddings; Ollama is a fallback only
 
 ### Embedding Cache
 
@@ -61,7 +61,12 @@ skip embedding entirely — up to 19× faster.
 
 - **Never mix embedding dimensions.** Using `nomic-embed-text` (768-dim)
   against `bge-large` (1024-dim) entries corrupts the index.
+- **All layers must use the same model.** bge-large across local vector DB,
+  Central KB submit, and Central KB search ensures vector compatibility.
 - Embedding cache uses a **separate** SQLite DB (`embed_cache.sqlite3`)
   to avoid connection contention with `agentdb.sqlite3`.
 - Concurrent `CREATE TABLE` from two connections causes `database is locked`
   even in WAL mode — always use separate DB files for independent concerns.
+- `kb submit` skips Ollama model download if the Central KB HTTP sidecar
+  is reachable. Only falls back to `ollama pull bge-large:latest` if the
+  sidecar is down.

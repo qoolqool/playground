@@ -53,6 +53,16 @@ This is correct network isolation, not a bug.
 | `database is locked` errors | Concurrent SQLite connections | Use separate DB files for independent concerns |
 | No results from search-kb | Embeddings not indexed | Run `distill-and-index` first |
 
+## Central KB Build Issues
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| `pip install` hash mismatch error | `sentence-transformers` pulls nvidia GPU packages (known pip issue) | Remove it from tooling-central Dockerfile — embeddings are handled by embed-server sidecar |
+| Container unhealthy (exit code 127) | `curl` not installed in slim image | Add `curl` to `apt-get install` in the Dockerfile |
+| `localhost:9000` unreachable from host | `start.sh -k` run inside tooling container | Run `start.sh -k` from the **host OS** so port bindings map to host |
+| `localhost:9000` unreachable on macOS Podman | Podman VM port forwarding not active | Run `sudo podman-mac-helper install` then `podman machine stop && podman machine start` |
+| `sentence-transformers` in tooling-central | Not needed — embed-server handles all embeddings | Remove from Dockerfile and pyproject.toml |
+
 ## Still Stuck?
 
 Check the [AGENT.md](../AGENT.md) roadmap, or

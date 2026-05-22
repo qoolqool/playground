@@ -286,12 +286,18 @@ def cmd_submit(args):
         print("No YAML entries found in knowledgebase/", file=sys.stderr)
         sys.exit(1)
 
-    # Check Ollama embedding model
+    # Check embedding source — skip Ollama model check if sidecar is available
     model = embed_model()
-    check_ollama_model(model)
+    embed_http_url = _detect_embed_http_url()
+    if embed_http_url:
+        print(f"Using embed-server HTTP sidecar ({embed_http_url}) for embeddings")
+    else:
+        print(f"embed-server sidecar not reachable, falling back to Ollama ({model})")
+        check_ollama_model(model)
     dim = None
 
-    print(f"Generating embeddings with {model} for {len(entries)} entries...")
+    source = embed_http_url or f"ollama:{model}"
+    print(f"Generating embeddings via {source} for {len(entries)} entries...")
     for i, entry in enumerate(entries):
         embed_text = f"{entry['title']}\n{entry['content'][:512]}"
         vec = get_embedding(embed_text)

@@ -113,3 +113,10 @@ const LOG_PATH = path.join(os.homedir(), ".pi", "logs", "tooling-subagent.log");
 export const log: Logger = createLogger(LOG_PATH, {
  verbose: process.env.PI_SUBAGENT_DEBUG === "1",
 });
+
+export default function factory() {
+  return {
+    log,
+    createLogger,
+  };
+}

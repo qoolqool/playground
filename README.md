@@ -20,6 +20,11 @@ supporting both cloud and local models.
 ./start.sh -q        # Check prerequisites before building
 ```
 
+> **Note:** `./start.sh -k` must be run from the **host OS**, not inside the
+> tooling container. When run inside another container, the port bindings
+> (9000/9001) are only reachable within that container's Docker network.
+> On the host OS, Podman/Docker forwards the ports to `localhost`.
+
 For **Podman on macOS**, see [Podman Setup](doc/podman.md).
 
 ---
@@ -41,11 +46,13 @@ For **Podman on macOS**, see [Podman Setup](doc/podman.md).
                          │
          host.containers.internal
                          │
-         ┌───────────────┴───────────────────────┐
-         │  Central KB        (optional)         │
-         │  API :9000 · Embed sidecar :9001      │
-         │  Cross-project knowledge sharing      │
-         └───────────────────────────────────────┘
+         ┌───────────────┴──────────────────────────┐
+         │  Central KB        (optional)            │
+         │  API :9000 · Embed sidecar :9001         │
+         │  ├── tooling-central (FastAPI, no ML)    │
+         │  └── embed-server (sentence-transformers)│
+         │  Cross-project knowledge sharing         │
+         └──────────────────────────────────────────┘
 ```
 
 [Knowledge pipeline details](doc/knowledge-pipeline.md)
@@ -89,7 +96,7 @@ See [Models](doc/models.md) for embedding model details.
 ./start.sh -f           # Force rebuild
 ./start.sh -p           # Pull prebuilt image from GHCR instead of building
 ./start.sh -q           # Check prerequisites before building
-./start.sh -k           # Start central-kb, then build + enter
+./start.sh -k           # Start central-kb, then build + enter (run on host OS)
 # Model selection
 ollama launch pi --model <model>:cloud   # Cloud model
 pi-local <model>                         # Local model on host GPU

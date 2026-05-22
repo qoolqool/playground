@@ -56,6 +56,8 @@ sudo dnf install podman-docker   # Fedora
 | `Cannot connect to Podman` | VM not started → `podman machine start` |
 | `Error: rootless connection` | VM not rootful → `podman machine set --rootful` then restart |
 | Port forwarding not working | Use the 3-layer port-forwarding script (not direct `-p` flags) |
+| Port forwarding not working on macOS | Podman VM doesn't auto-forward to host | Run from host OS (not inside container), or `sudo podman-mac-helper install` |
+| Central KB ports unreachable | start.sh run inside tooling container | Run `./start.sh -k` from the host OS |
 
 ## Quickstart Check
 
