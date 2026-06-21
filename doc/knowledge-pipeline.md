@@ -3,6 +3,10 @@
 Two complementary skills manage the knowledge lifecycle in the playground:
 **distill-and-index** (write) and **search-kb** (read).
 
+All knowledge is stored in the **Open Knowledge Format (OKF) v0.1** —
+markdown files with YAML frontmatter. See [OKF Migration](okf-migration.md)
+for details on the format.
+
 ## Architecture
 
 ```
@@ -10,9 +14,9 @@ Playground Container
 │
 ├── Write Path
 │   distill-and-index skill
-│   → knowledgebase/*.yaml
+│   → knowledgebase/*.md (OKF markdown)
 │   → load-kb-to-memory.py (vector DB: agentdb.sqlite3)
-│   → kb submit (central-kb)
+│   → kb submit --okf-dir (central-kb)
 │
 ├── Read Path
 │   search-kb skill
@@ -50,12 +54,32 @@ work**. The `search-kb` skill automatically detects available backends:
 - Fallback order: Central KB HTTP sidecar (~100ms) → Ollama (~330ms)
 - No local sentence-transformers or embed-server daemon needed in the tooling container
 - The Central KB sidecar handles embeddings; Ollama is a fallback only
+- Embeddings are generated from the **markdown body** (after stripping YAML frontmatter)
 
 ### Embedding Cache
 
 The pipeline includes an intelligent embedding cache. On first run, all entries
 are embedded (showing progress per file). On subsequent runs, cached entries
 skip embedding entirely — up to 19× faster.
+
+## OKF Format
+
+Each knowledge entry is an OKF concept document:
+
+```markdown
+---
+type: Decision
+title: FastAPI as Primary Web Framework
+description: All microservices will use FastAPI with Pydantic v2.
+tags: [architecture, python, fastapi]
+timestamp: 2026-01-15T10:30:00Z
+---
+
+# Context
+...
+```
+
+See [OKF Migration](okf-migration.md) for the full specification and migration guide.
 
 ## Gotchas
 
@@ -70,3 +94,5 @@ skip embedding entirely — up to 19× faster.
 - `kb submit` skips Ollama model download if the Central KB HTTP sidecar
   is reachable. Only falls back to `ollama pull bge-large:latest` if the
   sidecar is down.
+- OKF frontmatter is parsed server-side on submit. The `type` field is
+  required; all other fields are optional per the OKF spec.

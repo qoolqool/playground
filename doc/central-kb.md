@@ -4,6 +4,10 @@ The [central-kb](https://github.com/qoolqool/central-kb) server provides
 cross-project knowledge sharing, simhash dedup, drift detection, and a
 shared embedding sidecar.
 
+All knowledge is stored in the **Open Knowledge Format (OKF) v0.1** —
+markdown files with YAML frontmatter. See [OKF Migration](okf-migration.md)
+for details.
+
 > **Optional.** The playground falls back to local Ollama embeddings and
 > local SQLite when central-kb is not running.
 
@@ -56,12 +60,36 @@ kb search "test" --scope my-project
 
 | Command | Description |
 |---------|-------------|
-| `kb submit --project <name>` | Push local KB entries to central |
+| `kb submit --project <name>` | Push local KB entries to central (auto-detects OKF dir or legacy DB) |
+| `kb submit --okf-dir <path>` | Submit OKF markdown files from a directory |
 | `kb pull --project <name>` | Pull project entries from central |
-| `kb search "query" --scope <name>` | Hybrid search (cosine + FTS5) |
+| `kb search "query" --scope <name>` | Hybrid search (cosine + FTS5) with OKF metadata |
 | `kb explain "query" --scope <name>` | Structured narrative synthesis |
+| `kb convert <input> <output>` | Convert legacy YAML entries to OKF format |
+| `kb validate <bundle-dir>` | Validate OKF bundle compliance |
+| `kb health` | Check Central KB server health |
 | `kb drift --project <name>` | Show cross-project drift report |
 | `kb candidates` | List entries promoted to global |
 | `kb promote <id> approve` | Approve a promotion candidate |
+
+## OKF Submission
+
+The `/submit` endpoint now accepts OKF markdown entries:
+
+```json
+{
+  "project": "my-project",
+  "source": "local:cli",
+  "okf_entries": [
+    {
+      "markdown": "---\ntype: Decision\ntitle: ...\n---\n\nBody..."
+    }
+  ]
+}
+```
+
+The server parses the YAML frontmatter, validates the required `type` field,
+and stores the full markdown as the entry content. The legacy `entries` field
+is still supported for backward compatibility.
 
 Full usage: [central-kb README](https://github.com/qoolqool/central-kb#cli-usage)

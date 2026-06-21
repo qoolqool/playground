@@ -1,7 +1,8 @@
 # Containerize AI Assist Playground
 
 A containerized development environment for vibe coding with AI agents,
-supporting both cloud and local models.
+supporting both cloud and local models. Knowledge is persisted as
+**OKF v0.1** markdown files and indexed for search across sessions.
 
 ## Quick Start
 
@@ -35,9 +36,13 @@ For **Podman on macOS**, see [Podman Setup](doc/podman.md).
 ┌──────────────────────────────────────────────────────┐
 │  Tooling Container                                   │
 │  ┌────────────────────────────────────────────────┐  │
-│  │ Knowledge Pipeline                             │  │
-│  │  Write: distill-and-index → kb submit          │  │
-│  │  Read:  search-kb skill → kb search/explain    │  │
+│  │ Knowledge Pipeline (OKF v0.1)                 │  │
+│  │  Distill: session → knowledgebase/*.md         │  │
+│  │  Index:   load-kb-to-memory.py (vector DB)    │  │
+│  │  Submit:  kb submit --project <name>          │  │
+│  │  Search:  kb search / search-kb-memory.py     │  │
+│  │  Convert: kb convert / migrate-to-okf.py      │  │
+│  │  Validate: kb validate <bundle>               │  │
 │  ├────────────────────────────────────────────────┤  │
 │  │ Ollama (localhost:11434) — local/cloud models  │  │
 │  │ pi coding agent · Neovim · Docker CLI · Git    │  │
@@ -52,6 +57,7 @@ For **Podman on macOS**, see [Podman Setup](doc/podman.md).
          │  ├── tooling-central (FastAPI, no ML)    │
          │  └── embed-server (sentence-transformers)│
          │  Cross-project knowledge sharing         │
+         │  OKF v0.1 compliant                      │
          └──────────────────────────────────────────┘
 ```
 
@@ -65,16 +71,15 @@ For **Podman on macOS**, see [Podman Setup](doc/podman.md).
 | **Cloud** | `ollama launch pi --model <model>:cloud` | Ollama cloud models via browser auth |
 | **Local** | `pi-local <model>` | Local models on host GPU |
 
-See [Models](doc/models.md) for embedding model details.
-
 ## Documentation
 
 | Topic | File |
 |-------|------|
 | Central KB setup & CLI reference | [doc/central-kb.md](doc/central-kb.md) |
+| OKF migration guide | [doc/okf-migration.md](doc/okf-migration.md) |
+| Knowledge pipeline & search | [doc/knowledge-pipeline.md](doc/knowledge-pipeline.md) |
 | Podman on macOS/Windows | [doc/podman.md](doc/podman.md) |
 | Model & embedding configuration | [doc/models.md](doc/models.md) |
-| Knowledge pipeline & search | [doc/knowledge-pipeline.md](doc/knowledge-pipeline.md) |
 | Troubleshooting | [doc/troubleshooting.md](doc/troubleshooting.md) |
 | Neovim keybinds | [doc/keybinds.md](doc/keybinds.md) |
 
@@ -83,10 +88,11 @@ See [Models](doc/models.md) for embedding model details.
 - **pi** — AI coding agent with memory + session search + skills
 - **Ollama** — Model launcher (cloud + local)
 - **Neovim** — Lazy.nvim with LSP, Telescope, Treesitter, Mermaid
-- **kb** — Central Knowledge Base CLI
+- **kb** — Central Knowledge Base CLI (`kb submit|search|convert|validate|pull|drift`)
 - **Docker CLI + Compose** — Socket-mounted from host
 - **Python 3, Node.js 22, Chromium** — Runtime support
 - **embed-server** — Local embedding daemon (bge-large, 1024-dim)
+- **OKF v0.1** — Open Knowledge Format (markdown + YAML frontmatter, 5 namespaces)
 
 ## Quick Reference
 
@@ -101,9 +107,17 @@ See [Models](doc/models.md) for embedding model details.
 ollama launch pi --model <model>:cloud   # Cloud model
 pi-local <model>                         # Local model on host GPU
 
-# Knowledge pipeline
-kb submit --project <name>               # Push local KB to central
-kb search "query" --scope <name>         # Search central KB
+# Knowledge pipeline (OKF v0.1)
+kb convert <legacy-dir> <okf-dir>         # Convert legacy YAML to OKF markdown
+kb validate <okf-dir>                      # Validate OKF bundle compliance
+kb submit --project <name>                 # Push local KB to central (auto-detect)
+kb submit --okf-dir <path> --project <p>   # Submit OKF markdown files
+kb search "query" --scope <name>           # Search central KB (returns OKF metadata)
+kb pull --project <name>                   # Pull entries from central KB
+kb drift --project <name>                  # Check for concept drift
+
+# Local vector DB (session search)
+python3 /project/tooling/scripts/search-kb-memory.py "<query>"
 ```
 
 ## Project Structure
@@ -118,10 +132,15 @@ kb search "query" --scope <name>         # Search central KB
 ├── tooling/
 │   ├── Dockerfile        # Image build
 │   ├── config/           # Dotfiles (nvim, bash, starship, git)
-│   ├── scripts/          # Utility scripts
+│   ├── central-kb/       # Central KB server + CLI (FastAPI, OKF v0.1)
+│   ├── scripts/          # Utility scripts (embedding, indexing)
 │   ├── skills/           # pi skills (auto-discovered)
 │   └── skill-marketplace/ # Bundled pi plugins (submodule)
-├── knowledgebase/        # Local KB entries (gitignored)
+├── scripts/
+│   └── migrate-to-okf.py # Legacy YAML → OKF conversion
+├── samples/
+│   └── okf-bundle/       # Example OKF bundle (decisions, patterns)
+├── knowledgebase/        # Local KB entries (OKF .md + legacy .yaml, gitignored)
 └── .agent/               # Vector DB, session data (gitignored)
 ```
 
