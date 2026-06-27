@@ -1,0 +1,8 @@
+{
+  "extensions": [
+    ".pi/extensions/resume-handoff.ts"
+  ],
+  "compaction": {
+    "enabled": true
+  }
+}

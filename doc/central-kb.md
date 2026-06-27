@@ -24,7 +24,7 @@ git clone https://github.com/qoolqool/central-kb ../central-kb
 
 # Start central-kb, then build and enter the playground
 # ⚠️  Must be run from the host OS, not inside the tooling container
-./start.sh -k
+./bootstrap.sh -k
 ```
 
 The `-k` / `--setup-central-kb` flag:
@@ -34,7 +34,7 @@ The `-k` / `--setup-central-kb` flag:
 4. Waits for both services to become healthy (up to 60s for PyTorch model download)
 5. Creates a `.central-kb-ready` marker and proceeds to build/start the playground
 
-> **Important:** `./start.sh -k` must be run from the **host OS**. When run inside
+> **Important:** `./bootstrap.sh -k` must be run from the **host OS**. When run inside
 > the tooling container, Docker/Podman port bindings (9000/9001) only exist in
 > that container's network namespace — the host OS cannot reach them. From the
 > host OS, the services are accessible at `localhost:9000` and `localhost:9001`.
@@ -43,7 +43,7 @@ The `-k` / `--setup-central-kb` flag:
 
 ```bash
 cd ../central-kb && docker compose up -d embed-server tooling-central
-cd ../playground && ./start.sh   # auto-detects running central-kb
+cd ../playground && ./bootstrap.sh   # auto-detects running central-kb
 ```
 
 ## Verify Connectivity

@@ -68,7 +68,7 @@ RUN set -eux; \
 
 
 # Global npm tools
-RUN npm install -g typescript pnpm && npm cache clean --force
+RUN npm install -g typescript pnpm pptxgenjs@^4.0.1 && npm cache clean --force
 
 
 # --- OLLAMA (standalone binary, no models) ----------------------------
@@ -180,6 +180,13 @@ RUN pi install npm:pi-hermes-memory || true
 COPY --chown=tool:tool extensions/logging.ts /home/tool/.pi/agent/extensions/logging.ts
 COPY --chown=tool:tool extensions/subagent/ /home/tool/.pi/agent/extensions/subagent/
 COPY --chown=tool:tool extensions/agents/ /home/tool/.pi/agent/agents/
+
+# --- AGENTS.md (global agent instructions) ----------------------------
+RUN mkdir -p /home/tool/.pi/agent
+COPY --chown=tool:tool config/agents.md /home/tool/.pi/agent/AGENTS.md
+
+# --- RESUME-HANDOFF EXTENSION -------------------------------------------
+COPY --chown=tool:tool extensions/resume-handoff.ts /home/tool/.pi/agent/extensions/resume-handoff.ts
 
 # --- ATLASSIAN CLI SCRIPT ------------------------------------------------
 COPY --chown=tool:tool scripts/atlassian-cli.py scripts/atlassian-cli.py
