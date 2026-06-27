@@ -12,7 +12,7 @@ description: >
 
 - You've been going in circles with contradictory evidence
 - A workaround keeps failing in new and interesting ways
-- You're getting results that "can't both be true" (e.g., CouchDB says deleted but peer query returns old value)
+- You're getting results that "can't both be true" (two sources disagree about the same thing)
 - The user suggests a simpler approach you dismissed
 - You've made 3+ attempts at the same class of fix without success
 
@@ -30,36 +30,39 @@ description: >
 
 ### 2. State the Contradiction Clearly
 
-Write down exactly what contradicts:
+Write down exactly what contradicts, as evidence rather than interpretation:
 
 ```
-Tool A says:  X
-Tool B says:  not X
-These cannot both be true unless [unlikely explanation].
+Source A reports:  X
+Source B reports:  not X
+Both are querying the same underlying thing, so they cannot both be true
+unless [unlikely explanation you have not yet proven].
 ```
 
-Example from the CouchDB reset bug:
-```
-peer chaincode query BalanceOf reserve-pool → 5,200,000
-CouchDB GET /BAL~did:example:reserve-pool → 404 "deleted"
-Peer config says CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=localhost:5984
-```
+Naming the contradiction in plain language is often enough to make the wrong
+assumption obvious. If you cannot write the contradiction down crisply, you do
+not yet understand the system well enough to fix it.
 
 ### 3. Ask: "Is the Approach Wrong, Not the Data?"
 
-When evidence contradicts, the most likely explanation is **your mental model is wrong**, not the tools. Common causes:
+When evidence contradicts, the most likely explanation is **your mental model is
+wrong**, not the tools. Common patterns:
 
 | Symptom | Likely Root Cause |
 |---------|-------------------|
-| CouchDB says deleted, peer says old value | Direct CouchDB manipulation creates tombstones; peer reads from different source or has cache |
-| Invoke fails with TLS/cert error after CouchDB purge | State divergence between peers causes endorsement failures |
-| Workaround works once then breaks | The workaround creates hidden state that breaks the next operation |
+| Two views of "the same" data disagree | They read from different layers (cache vs source, replica vs primary, in-memory vs persisted) |
+| An operation fails only after a prior "fix" | The fix created hidden state that corrupts the next step |
+| A workaround works once then breaks | It depends on transient state that no longer holds |
+| It "works on my machine" but not elsewhere | An unstated environmental assumption differs |
 
 ### 4. Listen to the User's Suggestion
 
-When the user says "why not just reinitialise the DB?" — **try it immediately**. Do not explain why it won't work. Do not list reasons to keep debugging the broken approach. The user has context you don't.
+When the user proposes a simpler approach — **try it immediately**. Do not explain
+why it won't work. Do not list reasons to keep debugging the broken approach. The
+user has context you don't.
 
-**Rule:** If the user suggests a simpler approach, try it before making another attempt at the current approach.
+**Rule:** If the user suggests a simpler approach, try it before making another
+attempt at the current approach.
 
 ### 5. Replace, Don't Patch
 
@@ -68,52 +71,44 @@ When a workaround is fundamentally broken:
 - **Don't** try to "fix" the workaround
 - **Do** replace the entire approach with something clean
 
-Example:
 ```
-❌ Bad: "Let me add more error handling to the CouchDB key deletion"
-❌ Bad: "Let me try deleting keys one at a time instead of in bulk"
-✅ Good: "Drop the entire CouchDB database and restart peers"
+❌ Bad: "Let me add more error handling around the broken operation"
+❌ Bad: "Let me work around the workaround with a smaller workaround"
+✅ Good: "Let me drop the corrupted state and rebuild it from a known-good source"
 ```
 
 ### 6. Verify All Sources Are Consistent
 
-After applying the fix, verify that ALL data sources agree:
+After applying the fix, verify that every place the problem could resurface agrees.
+Enumerate the relevant sources first (e.g. each replica/cache/instance, plus the
+read path the user actually sees), then check each one:
 
 ```bash
-# Check all CouchDB instances
-for db in couchdb0 couchdb1 couchdb2; do
-  docker exec "$db" curl -s http://admin:adminpw@localhost:5984/stablechannel_stablecoin/_all_docs
+# Example shape — adapt to your system:
+for instance in <each-replica-or-layer>; do
+  <query-the-same-thing-against "$instance">
 done
-
-# Check peer query
-peer chaincode query -C stablechannel -n stablecoin -c '{"Args":["BalanceOf","did:example:reserve-pool"]}'
-
-# Check service API
-curl http://service/api/v1/token/balance/did:example:reserve-pool
+<query-through-the-read-path-the-user-sees>
 ```
 
 If any source disagrees, the fix is incomplete.
 
 ### 7. Run the Full Test Suite
 
-A single passing test is not enough. Run the full E2E suite to catch regressions:
-
-```bash
-pytest scripts/e2e/live/wired_01_happy_flow.py -v -s
-```
+A single passing test is not enough. Run the full end-to-end suite to catch
+regressions introduced by the replacement approach.
 
 ## Pitfalls
 
-- **Explaining away contradictions** — "Maybe the peer has a cache" without evidence is a sign you're in denial. Prove it or drop it.
+- **Explaining away contradictions** — "Maybe there's a cache" without evidence is denial. Prove it or drop it.
 - **Adding complexity to a broken approach** — If a workaround needs more workarounds, the original approach is wrong.
 - **Ignoring the user's suggestion** — The user has context you don't. Try their suggestion first.
-- **Only checking one data source** — If you only check the peer query, you miss the CouchDB tombstones. Check ALL sources.
-- **Not restarting after CouchDB changes** — Dropping a CouchDB database requires peer restart to take effect.
+- **Only checking one data source** — If you only check the path that "works," you miss where the problem actually lives. Check ALL relevant sources.
+- **Forgetting to reset/restart after a state change** — Dropping or rebuilding state often requires the component to reload before it takes effect.
 
 ## Verification
 
-- [ ] All data sources agree (CouchDB, peer query, service API)
-- [ ] All CouchDB instances have identical state
-- [ ] Full E2E test suite passes
+- [ ] All relevant data sources agree (every replica, cache, and the user-facing read path)
+- [ ] The full end-to-end test suite passes
 - [ ] The fix is simpler than the workaround it replaced
 - [ ] You can explain why the old approach was wrong
