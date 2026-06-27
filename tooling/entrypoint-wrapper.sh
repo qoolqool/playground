@@ -2,6 +2,8 @@
 set -e
 
 # --- Git Submodule Initialization ---
+# Always run from /project (playground root) regardless of -w flag
+cd /project
 echo "Initializing git submodules..."
 git submodule update --init --recursive
 
@@ -113,6 +115,7 @@ cleanup_circular_symlinks() {
 
 # Pre-cleanup: remove any existing circular symlinks from previous runs
 cleanup_circular_symlinks "$SKILLS_SRC"
+rm -rf "$SKILLS_DST"
 
 if [ -d "$SKILLS_SRC" ]; then
   mkdir -p "$SKILLS_DST"
@@ -129,6 +132,51 @@ fi
 # Post-cleanup: remove any circular symlinks that pi may have created at runtime
 cleanup_circular_symlinks "$SKILLS_SRC"
 
+# --- Cross-Project Skills Bridge ---
+# When --project is used, /workspace points to a different directory than /project.
+# Pi discovers skills from .pi/skills/ in cwd (/workspace), so we bridge them
+# so Pi always finds the skills from /project regardless of which project is mounted.
+# When no --project is used, /workspace and /project are the same directory,
+# so the symlink would be circular — skip in that case.
+if [ "$(readlink -f /workspace 2>/dev/null || echo /workspace)" != "$(readlink -f /project 2>/dev/null || echo /project)" ]; then
+  mkdir -p /workspace/.pi 2>/dev/null || {
+    echo "Warning: Cannot write to /workspace/.pi (project directory may not exist on host)"
+    echo "  Create the directory on your host: mkdir -p $(readlink -f /workspace 2>/dev/null)"
+  }
+  if [ -w /workspace/.pi ]; then
+    # Remove existing dir/symlink at target to avoid conflicts
+    if [ -e /workspace/.pi/skills ] && [ ! -L /workspace/.pi/skills ]; then
+      rm -rf /workspace/.pi/skills
+      echo "Removed existing /workspace/.pi/skills/ directory (replacing with symlink)"
+    fi
+    ln -sfn /project/.pi/skills /workspace/.pi/skills
+    echo "Bridged skills: /workspace/.pi/skills → /project/.pi/skills"
+  fi
+fi
+
+# --- Pi Extensions & Settings Bootstrap ---
+# .pi/ is gitignored — seed all config from tooling/ at container start.
+# Source files live under /project/tooling/ (volume-mounted, survive rebuild).
+PI_CONFIG_SRC="/project/tooling/config/pi"
+PI_DST="/project/.pi"
+mkdir -p "$PI_DST/extensions"
+
+# Deploy extension source
+if [ -f "/project/tooling/extensions/resume-handoff.ts" ]; then
+  cp "/project/tooling/extensions/resume-handoff.ts" "$PI_DST/extensions/resume-handoff.ts"
+  echo "Bootstrapped resume-handoff extension"
+fi
+
+# Deploy pi config files (settings.json, package.json)
+if [ -d "$PI_CONFIG_SRC" ]; then
+  for f in "$PI_CONFIG_SRC"/*; do
+    if [ -f "$f" ]; then
+      cp "$f" "$PI_DST/"
+      echo "Bootstrapped .pi/$(basename $f)"
+    fi
+  done
+fi
+
 # Ensure nvim plugins & tools are installed (first run only)
 if [ ! -d "${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy" ]; then
   echo "Installing nvim plugins (first run)..."
@@ -138,27 +186,8 @@ if [ ! -d "${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy" ]; then
   echo "Installing Mason LSP servers..."
   nvim --headless "+MasonInstall pyright lua-language-server" +qa 2>/dev/null || true
 fi
-
-ollama serve &
-
-# Wait for Ollama to be ready
-for i in $(seq 1 30); do
-  if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-    echo "Ollama ready"
-    break
-  fi
-  sleep 1
-done
-
-# Embeddings: Central KB embed-server HTTP sidecar (bge-large, 1024-dim)
-# or Ollama bge-large:latest as fallback. No local embed-server needed.
-# Pull the embedding model in the background so it's ready when the sidecar is unreachable.
-# Ollama pull is idempotent — returns immediately if the model already exists.
-ollama pull bge-large:latest >/dev/null 2>&1 &
-
-
 echo "╔========================================================╗"
-echo "|    Tooling Container                                   |"
+echo "|    Tooling Container                                    |"
 echo "|    Ollama is now running in paperclip container        |"
 echo "|    Ollama URL: http://127.0.0.1:11434                  |"
 
@@ -176,5 +205,10 @@ echo "|    Host IP (local models): $HOST_IP                     "
 echo "╚════════════════════════════════════════════════════════╝"
 
 alias vi=nvim
-# Execute the main command
-exec "$@"
+
+# Execute the main command. If no command is given, default to running ollama
+if [ $# -gt 0 ]; then
+    exec "$@"
+else
+    exec ollama serve
+fi

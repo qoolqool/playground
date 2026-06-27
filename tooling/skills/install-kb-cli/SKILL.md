@@ -85,6 +85,9 @@ No local embedding model download required if the embed-server sidecar is reacha
 kb submit --project my-project                    # Push local KB entries
 kb pull --project my-project                     # Pull entries from server
 kb drift --project my-project                    # Check for concept drift
+kb lint --project my-project                     # Run memory lint (rule-based)
+kb lint --project my-project --llm               # Full lint with contradiction detection
+kb lint --project my-project --stale-days 30     # Custom staleness threshold
 kb candidates                                    # List promotion candidates
 kb conflicts                                     # List conflicts
 kb conflicts 1 --resolve "accept proposed"     # Resolve a conflict
@@ -134,6 +137,26 @@ When you run `kb submit`:
 4. Reports accepted/duplicate/conflicted/error status for each entry
 
 **Critical**: The server requires `vector` field on every submission. Entries without vectors are silently rejected with `status: "error"`. Never mix embedding dimensions in the same server DB — this corrupts the index and causes 500 errors on all subsequent submissions.
+
+## `kb lint` — Self-healing memory scan
+
+Two-phase diagnostic that checks knowledgebase health:
+
+**Phase 1 (rule-based, no LLM):** Always runs. Detects:
+- Orphan references — entries pointing to non-existent superseded parents
+- Broken chains — entries claiming to be superseded by missing entries
+- Stale entries — no access in N days (default: 90), candidates for forget sweep
+- Mixed vector dimensions — entries with embedding dims that don't match the expected 1024
+
+**Phase 2 (LLM-driven, opt-in with `--llm`):** Requires Ollama running locally.
+- Contradiction detection — finds semantically similar entry pairs (cosine ≥ 0.75)
+  and asks the LLM if they make opposing claims
+
+```bash
+kb lint --project my-project                    # Rule-based only
+kb lint --project my-project --llm              # Full lint with contradiction detection
+kb lint --project my-project --stale-days 30    # Custom staleness threshold
+```
 
 ## Pitfalls
 

@@ -27,7 +27,7 @@ detect_container_cmd() {
 }
 
 # --- Quickstart Prerequisite Check -----------------------------------------
-# Called by start.sh with -q/--quickstart flag.
+# Called by bootstrap.sh with -q/--quickstart flag.
 # Uses `type` (not `command -v`) to detect aliases like `alias docker=podman`.
 # Usage: quickstart_check [--check-central-kb]
 quickstart_check() {

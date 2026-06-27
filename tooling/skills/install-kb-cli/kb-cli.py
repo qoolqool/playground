@@ -14,8 +14,11 @@ Usage:
   kb submit --project <name>                  # Submit local KB YAML files
   kb submit --project <name> --dir /path      # Submit from custom directory
   kb pull --project <name>                     # Pull entries from server
-  kb search "query" --scope <name>              # Semantic + FTS search
+  kb search "query"                            # Uses CENTRAL_KB_PROJECT as scope
+  kb search "query" --scope <name>              # Override scope explicitly
   kb drift --project <name>                     # Check for drift
+  kb lint --project <name>                      # Run memory lint (rule-based)
+  kb lint --project <name> --llm                # Full lint with contradiction detection
   kb candidates                                  # List promotion candidates
   kb conflicts                                   # List conflicts
   kb conflicts <id> resolve --resolution <text> # Resolve a conflict
@@ -214,7 +217,7 @@ def get_embedding(text: str) -> list[float]:
 def load_kb_entries(kb_dir: Path) -> list[dict]:
     """Read YAML knowledge base entries from the standard directory layout."""
     entries: list[dict] = []
-    for namespace in ("decisions", "patterns", "sessions"):
+    for namespace in ("decisions", "patterns", "sessions", "gotchas", "rules"):
         ns_dir = kb_dir / namespace
         if not ns_dir.is_dir():
             continue
@@ -372,9 +375,12 @@ def cmd_pull(args):
 
 
 def cmd_search(args):
+    # Default scope: --scope flag > CENTRAL_KB_PROJECT env var
+    # (set by bootstrap.sh --project <name> when launching the container)
+    scope = args.scope or project_name()
     params = f"?q={urllib.request.quote(args.query)}"
-    if args.scope:
-        params += f"&scope={args.scope}"
+    if scope:
+        params += f"&scope={scope}"
     if args.namespace:
         params += f"&namespace={args.namespace}"
     if args.alpha is not None:
@@ -390,7 +396,8 @@ def cmd_search(args):
         print(json.dumps(result, indent=2))
     else:
         results = result.get("results", [])
-        print(f"Search: \"{args.query}\"  ({len(results)} results)")
+        scope_label = f" [scope={scope}]" if scope else ""
+        print(f"Search: \"{args.query}\"{scope_label}  ({len(results)} results)")
         for r in results:
             score = r.get("score", 0)
             cos = r.get("cosine_score", 0)
@@ -415,6 +422,41 @@ def cmd_drift(args):
             print(f"  {item}")
     else:
         print(f"✅ No drift detected for project '{proj}'")
+
+
+def cmd_lint(args):
+    """Run memory lint — detect orphans, stale entries, contradictions."""
+    proj = args.project or project_name()
+    if not proj:
+        print("ERROR: --project or CENTRAL_KB_PROJECT required", file=sys.stderr)
+        sys.exit(1)
+
+    body = {"project": proj, "with_llm": args.llm, "stale_days": args.stale_days}
+    if args.llm and args.model:
+        body["llm_model"] = args.model
+
+    result = api("/lint", method="POST", body=body)
+    if result is None:
+        return
+
+    findings = result.get("findings", [])
+    print(f"Lint results for project '{proj}':")
+    print(f"  {result.get('summary', '')}")
+    print()
+
+    if not findings:
+        print("  ✅ No issues found.")
+        return
+
+    for f in findings:
+        icon = {"error": "❌", "warning": "⚠️ ", "info": "ℹ️ "}.get(f.get("severity", "info"), "•")
+        print(f"  {icon} [{f.get('category', '?')}] {f.get('message', '')}")
+        if f.get("entry_key"):
+            print(f"     Entry: {f['entry_key']}")
+        if f.get("details"):
+            for k, v in f["details"].items():
+                print(f"     {k}: {v}")
+        print()
 
 
 def cmd_candidates(_args):
@@ -624,6 +666,13 @@ def main():
     p = sub.add_parser("drift", help="Check for conceptual drift")
     p.add_argument("--project", "-p", default=None, help="Project name")
 
+    # lint
+    p = sub.add_parser("lint", help="Run memory lint (orphans, stale entries, contradictions)")
+    p.add_argument("--project", "-p", default=None, help="Project name (or set CENTRAL_KB_PROJECT)")
+    p.add_argument("--llm", action="store_true", help="Enable LLM-driven contradiction detection")
+    p.add_argument("--model", "-m", default=None, help="Ollama model for --llm (default: auto-detect)")
+    p.add_argument("--stale-days", type=int, default=90, help="Staleness threshold in days (default: 90)")
+
     # candidates
     p = sub.add_parser("candidates", help="List promotion candidates")
 
@@ -654,6 +703,7 @@ def main():
         "pull": cmd_pull,
         "search": cmd_search,
         "drift": cmd_drift,
+        "lint": cmd_lint,
         "candidates": cmd_candidates,
         "explain": cmd_explain,
         "conflicts": cmd_conflicts,

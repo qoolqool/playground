@@ -13,20 +13,86 @@ supporting both cloud and local models. Knowledge is persisted as
 > ```
 
 ```bash
-./start.sh           # First run: build and enter container
-./start.sh -p        # Pull prebuilt image from GHCR (skips local build)
-./start.sh -k        # Start central-kb, then build and enter container
-./start.sh           # Subsequent runs: attach to existing container
-./start.sh -f        # Force rebuild (after Dockerfile/tooling changes)
-./start.sh -q        # Check prerequisites before building
+./bootstrap.sh           # First run: build and enter container
+./bootstrap.sh -p        # Pull prebuilt image from GHCR (skips local build)
+./bootstrap.sh -k        # Start central-kb, then build and enter container
+./bootstrap.sh           # Subsequent runs: attach to existing container
+./bootstrap.sh -f        # Force rebuild (after Dockerfile/tooling changes)
+./bootstrap.sh -q        # Check prerequisites before building
+./bootstrap.sh --project <name>  # Mount a project directory as /workspace
+./bootstrap.sh --stop            # Stop the container
 ```
 
-> **Note:** `./start.sh -k` must be run from the **host OS**, not inside the
+> **Note:** `./bootstrap.sh -k` must be run from the **host OS**, not inside the
 > tooling container. When run inside another container, the port bindings
 > (9000/9001) are only reachable within that container's Docker network.
 > On the host OS, Podman/Docker forwards the ports to `localhost`.
 
 For **Podman on macOS**, see [Podman Setup](doc/podman.md).
+
+## Project Mounting
+
+Use `--project <name>` to mount a project directory as `/workspace` inside the
+container, scoping the knowledgebase to that project.
+
+### Setup
+
+Add your projects to [`projects.yml`](projects.yml):
+
+```yaml
+projects:
+  my-app: ~/lab/my-app
+  another: /absolute/path/to/another
+```
+
+### Usage
+
+```bash
+./bootstrap.sh --project my-app              # Mount + enter
+./bootstrap.sh --project my-app -k           # Start Central KB, then mount
+./bootstrap.sh --project my-app -p           # Pull prebuilt image, then mount
+./bootstrap.sh --project my-app -f           # Force rebuild and mount
+./bootstrap.sh --project another -f          # Switch project (recreate required)
+```
+
+### How it works
+
+| Scenario | `/workspace` mount | `/project` mount | `CENTRAL_KB_PROJECT` |
+|----------|-------------------|-----------------|---------------------|
+| `--project <name>` | Project dir → `rw` | Playground root → `rw` | Set to project name |
+| No `--project` | Playground root → **`ro`** | Playground root → `rw` | Not set |
+
+When `--project` is used, the project directory and playground root are different
+paths, so both mounts are read-write. Without `--project`, both mounts point to
+the same directory — `/workspace` is set to **read-only** to avoid dual writable
+mounts of the same filesystem.
+
+### Inside the container
+
+When started with `--project my-app`, the container has:
+- `/workspace` → `~/lab/my-app` (your project code)
+- `/project` → playground root (tooling, scripts, docs)
+- `$CENTRAL_KB_PROJECT` = `my-app` (kb CLI auto-scopes to this project)
+
+## Stopping the Container
+
+```bash
+./bootstrap.sh --stop              # Stop the playground container
+./bootstrap.sh --stop -k           # Stop container + central-kb services
+```
+
+The `--stop` flag stops the running playground container. With `-k`/`--setup-central-kb`,
+it also stops the central-kb embed-server and tooling-central services.
+
+## Host-Only Guard
+
+`bootstrap.sh` detects if it's running inside a container and refuses to run.
+This prevents accidentally running container lifecycle commands from within
+the tooling container itself. To override (for testing):
+
+```bash
+PLAYGROUND_ALLOW_INSIDE=true ./bootstrap.sh
+```
 
 ---
 
@@ -98,11 +164,13 @@ For **Podman on macOS**, see [Podman Setup](doc/podman.md).
 
 ```bash
 # Container lifecycle
-./start.sh              # Build + enter (first run) or attach
-./start.sh -f           # Force rebuild
-./start.sh -p           # Pull prebuilt image from GHCR instead of building
-./start.sh -q           # Check prerequisites before building
-./start.sh -k           # Start central-kb, then build + enter (run on host OS)
+./bootstrap.sh              # Build + enter (first run) or attach
+./bootstrap.sh -f           # Force rebuild
+./bootstrap.sh -p           # Pull prebuilt image from GHCR instead of building
+./bootstrap.sh -q           # Check prerequisites before building
+./bootstrap.sh -k           # Start central-kb, then build + enter (run on host OS)
+./bootstrap.sh --project <name>  # Mount a project directory as /workspace
+./bootstrap.sh --stop             # Stop the container
 # Model selection
 ollama launch pi --model <model>:cloud   # Cloud model
 pi-local <model>                         # Local model on host GPU
@@ -124,7 +192,8 @@ python3 /project/tooling/scripts/search-kb-memory.py "<query>"
 
 ```
 .
-├── start.sh              # Container lifecycle CLI
+├── bootstrap.sh          # Container lifecycle CLI
+├── projects.yml          # Project directory mappings (for --project flag)
 ├── setenv.sh             # Dynamic env config (Docker vs Podman)
 .github/               # CI/CD workflows and Dependabot config
 ├── docker-compose.yml    # Container definition
@@ -154,7 +223,7 @@ when changes are pushed to `main` that affect the Dockerfile, config, scripts, o
 ### Using the Prebuilt Image
 
 ```bash
-./start.sh -p       # Pull latest image from GHCR instead of building locally
+./bootstrap.sh -p       # Pull latest image from GHCR instead of building locally
 ```
 
 On first run, this downloads the image in seconds instead of building for 5-15 minutes.
@@ -176,7 +245,7 @@ If you need to trigger a build without pushing to `main`:
 
 ### Pulling Without Authentication
 
-The image is public - no GHCR login is required for `./start.sh -p`. If you hit
+The image is public - no GHCR login is required for `./bootstrap.sh -p`. If you hit
 rate limits (anonymous: 100 pulls/6h per IP), authenticate with:
 
 ```bash

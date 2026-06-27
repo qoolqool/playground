@@ -32,7 +32,7 @@ Look for the `IdentityFile` path and SSH URI — the VM IP is in the URI
 
 ```bash
 export PODMAN_VM_IP=192.168.127.2
-./start.sh
+./bootstrap.sh
 ```
 
 Add the export to your shell profile (`~/.zshrc`, `~/.bashrc`) so it persists.
@@ -45,7 +45,7 @@ sudo apt install podman-docker   # Debian/Ubuntu
 sudo dnf install podman-docker   # Fedora
 
 # Or use podman directly (auto-detected)
-./start.sh
+./bootstrap.sh
 ```
 
 ## Troubleshooting
@@ -57,11 +57,11 @@ sudo dnf install podman-docker   # Fedora
 | `Error: rootless connection` | VM not rootful → `podman machine set --rootful` then restart |
 | Port forwarding not working | Use the 3-layer port-forwarding script (not direct `-p` flags) |
 | Port forwarding not working on macOS | Podman VM doesn't auto-forward to host | Run from host OS (not inside container), or `sudo podman-mac-helper install` |
-| Central KB ports unreachable | start.sh run inside tooling container | Run `./start.sh -k` from the host OS |
+| Central KB ports unreachable | bootstrap.sh run inside tooling container | Run `./bootstrap.sh -k` from the host OS |
 
 ## Quickstart Check
 
-Use `./start.sh -q` to validate your Podman setup before building:
+Use `./bootstrap.sh -q` to validate your Podman setup before building:
 - Checks `PODMAN_VM_IP` is set (macOS)
 - Pings the VM IP to verify reachability
 - Verifies `podman info` returns successfully
