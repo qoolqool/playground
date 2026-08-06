@@ -5,7 +5,7 @@ set -e
 # Always run from /project (playground root) regardless of -w flag
 cd /project
 echo "Initializing git submodules..."
-git submodule update --init --recursive
+git submodule update --init --recursive || echo "⚠ git submodule update skipped (non-fatal)"
 
 # --- Ownership Fix ---
 echo "Fixing /project permissions..."

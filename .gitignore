@@ -73,3 +73,4 @@ tarball/
 # Entrypoint-generated scripts (symlinks from .pi/skills/)
 tooling/scripts/load-kb-to-memory.py
 tooling/scripts/search-kb-memory.py
+projects.yml
