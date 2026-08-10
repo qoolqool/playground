@@ -64,6 +64,8 @@ RUN set -eux; \
     tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1; \
     rm -rf /tmp/node.tar.gz; \
     node --version; \
+    npm --version; \
+    npm install -g npm@latest && \
     npm --version
 
 

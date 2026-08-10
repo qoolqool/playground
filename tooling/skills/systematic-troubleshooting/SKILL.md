@@ -98,6 +98,23 @@ If any source disagrees, the fix is incomplete.
 A single passing test is not enough. Run the full end-to-end suite to catch
 regressions introduced by the replacement approach.
 
+### 8. Validate Through Gated-Testbed
+
+After the fix is verified and tests pass, **load and run the `gated-testbed` skill**
+(`/workspace/.pi/skills/gated-testbed/SKILL.md`) to validate the fix against all
+four gates:
+
+- **Gate 1 (Spec)** — always run. If troubleshooting changed ports, replaced
+  containers, added/removed services, or modified any infrastructure, the spec
+  must be updated first. Gate 1 catches spec drift.
+- **Gate 2 (Implementation)** — confirms the fix aligns with the spec
+- **Gate 3 (Security/Policy)** — catches any security regressions introduced
+- **Gate 4 (Runtime/Integration)** — verifies the fix works in the live stack
+
+This is especially important when the troubleshooting involved infrastructure
+changes, config modifications, or service rebuilds. The gated-testbed provides
+an independent validation layer that catches what ad-hoc testing might miss.
+
 ## Pitfalls
 
 - **Explaining away contradictions** — "Maybe there's a cache" without evidence is denial. Prove it or drop it.
@@ -112,3 +129,4 @@ regressions introduced by the replacement approach.
 - [ ] The full end-to-end test suite passes
 - [ ] The fix is simpler than the workaround it replaced
 - [ ] You can explain why the old approach was wrong
+- [ ] Gated-testbed validation passed (Gates 1, 2, 3, 4)

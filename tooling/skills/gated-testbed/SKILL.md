@@ -127,6 +127,23 @@ After Gate 3 PASS and before any "done", "ready for review", HARDEN, or runtime-
 - **Bootstrap verify** — `bootstrap.sh verify` runs health checks on all services from inside the compose network.
 - **E2E happy-flow test** — Discovers `*happy_flow*` under `tests/e2e/` and runs it via `docker compose exec test-runner python3 -m pytest`. If no happy-flow file exists, this phase is skipped with a warning (not a hard failure).
 
+**CRITICAL: Always use `bootstrap.sh up` to bring up the stack, never raw `docker compose up -d`.**
+The bootstrap script does more than just start containers:
+- Copies config files into containers (envoy.yaml, Caddyfile, prometheus.yml)
+- Copies test files into test-runner via `docker cp` (idempotent: cleans old files first)
+- Restarts proxy services to pick up new configs
+- Sources `scripts/setenv.sh` which sets `COMPOSE_PROJECT_NAME` and `HOST_PROJECT_DIR`
+
+If you use raw `docker compose up -d`, you will miss config copies and test file syncs, causing:
+- Gate 4 E2E tests to fail (no test files in test-runner)
+- Services to run with stale or default configs
+- `bootstrap.sh verify` to report wrong container counts (wrong COMPOSE_PROJECT_NAME)
+
+**Before running Gate 4, always verify:**
+1. `scripts/setenv.sh` has the correct `COMPOSE_PROJECT_NAME` for the current phase
+2. `scripts/bootstrap.sh` has the correct network names and phase label
+3. All healthchecks use commands available in the container (e.g., `python3 -c "import urllib.request..."` instead of `curl` for Flask containers)
+
 **Re-run Gate 4** if:
 - The stack was brought down and back up
 - Services were added, removed, or reconfigured
@@ -245,6 +262,22 @@ The gate auto-detects the compose file under `/workspace/deploy/compose/root.yml
 - Pass `attempt_number` and `previous_summary` on consecutive calls so the feedback feels like a conversation, not a reset.
 - The revision protocol is identical for all gates: read → apply → re-run → repeat until `status == "pass"`.
 
+### Critical: Determine Which Direction to Fix
+
+When Gate 2 reports a mismatch between spec and implementation, **do not blindly fix the implementation to match the spec.** The spec is the designed source of truth, but implementation discoveries (e.g., "this container runs gunicorn, not tail" or "this image doesn't have curl") should feed back into the spec.
+
+**Decision rule:**
+- If the **implementation is wrong** (typo, missing file, wrong port, broken config) → fix the implementation to match the spec.
+- If the **spec is wrong** (healthcheck uses a command unavailable in the image, port doesn't match the actual service, dependency missing) → update the spec to match the correct implementation, then re-run Gate 1.
+
+**How to decide:**
+1. Check the Dockerfile — does it have a working healthcheck that differs from the spec? The Dockerfile is the ground truth for what the container can do.
+2. Check the container image — does it have the tools the spec's healthcheck requires? (e.g., `curl` in an Alpine image, `pgrep` in a distroless image)
+3. Check the actual runtime — does the container start and serve traffic with the current config? If yes, the implementation is correct and the spec is stale.
+4. If the spec describes a design intent that was never implemented (e.g., a healthcheck that was never added to the Dockerfile), fix the implementation.
+
+**After updating the spec:** The state transitions back to `SPEC_DIRTY`. Re-run Gate 1 to validate the updated spec, then re-run Gate 2.
+
 ## Phase 0 (still required, but now feeds the gate)
 
 Before the first `validate` call, perform the critical service analysis and encode the results directly into the spec (`description` fields, guardrails, etc.). Gate 1 will then enforce the quality of those decisions.
@@ -326,6 +359,9 @@ Services that exist in the spec/design but are **not in the current deployment**
 - **Docs drift is a quality failure.** If the `.md` files under `/workspace` don't match the deployed compose, the implementation is incomplete. Always sync docs after code changes.
 - **Do not label non-deployed services as "deferred Phase 1".** They belong to their actual target phase (Phase 2, Phase 3, etc.). Use a "Next Steps" section.
 - **Healthchecks in docs must match the actual deployed command**, not a theoretical one. Account for image limitations (e.g., Envoy image doesn't include `curl`).
+- **`scripts/setenv.sh` must be kept in sync with the compose project name.** If the compose file changes `name:` (e.g., `quic-edge-v4` → `quic-edge-v5`), update `COMPOSE_PROJECT_NAME` in `setenv.sh` too. Otherwise `bootstrap.sh` will look at the wrong project and report 0 containers.
+- **Healthchecks must use commands available in the container image.** Flask containers (`python:3.12-slim`) don't have `curl` — use `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:PORT/health')"` instead. Caddy containers have `curl` but the health endpoint must exist in the Caddyfile.
+- **Config files for proxy services (envoy.yaml, Caddyfile) may have pre-existing issues** that only manifest on container restart. Always test a full `bootstrap.sh down && bootstrap.sh up` cycle before claiming Gate 4 pass.
 
 ## Verification
 

@@ -58,7 +58,8 @@ app*/
 docs/
 
 # Knowledge management
-knowledgebase/
+# (no trailing slash: matches both the dir and the tracked symlink)
+knowledgebase
 graphify-out/
 
 # Build artifacts
