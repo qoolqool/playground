@@ -64,6 +64,8 @@ RUN set -eux; \
     tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1; \
     rm -rf /tmp/node.tar.gz; \
     node --version; \
+    npm --version; \
+    npm install -g npm@latest && \
     npm --version
 
 
@@ -168,6 +170,7 @@ RUN mkdir -p /home/tool/.npm-global && \
 # 3. Now global installs will work without sudo/root
 # Install Pi coding agent globally
 # Use the updated namespace
+ARG CACHEBUST=1
 RUN npm install -g @earendil-works/pi-coding-agent
 
 # Install local distill-rag-bridge from your copied local directory

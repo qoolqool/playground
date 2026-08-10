@@ -248,7 +248,7 @@ if [ "$NEEDS_BUILD" = true ]; then
         fi
     else
         echo "Building tooling container..."
-        $DOCKER compose build
+        $DOCKER compose build --build-arg CACHEBUST=$(date +%s)
     fi
 fi
 
@@ -286,6 +286,22 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     echo "  /workspace ← $MOUNT_TARGET (${WORKSPACE_MODE})"
     [ -n "$PROJECT_NAME" ] && echo "  CENTRAL_KB_PROJECT=$PROJECT_NAME"
 
+    # Build --add-host flags based on container runtime
+    # Docker: host-gateway resolves to the host's gateway
+    # Podman: host.containers.internal is auto-added; host.docker.internal needs the VM IP
+    ADD_HOST_FLAGS=()
+    if [ "$CONTAINER_CMD" = "podman" ]; then
+        # Podman already adds host.containers.internal automatically.
+        # For host.docker.internal, use the Podman VM IP (default: 192.168.127.2).
+        PODMAN_IP="${PODMAN_VM_IP:-192.168.127.2}"
+        ADD_HOST_FLAGS+=(--add-host "host.docker.internal:$PODMAN_IP")
+        # host.containers.internal is auto-added by Podman — skip explicit add
+    else
+        # Docker: host-gateway resolves correctly
+        ADD_HOST_FLAGS+=(--add-host "host.docker.internal:host-gateway")
+        ADD_HOST_FLAGS+=(--add-host "host.containers.internal:host-gateway")
+    fi
+
     $DOCKER run -d --name "$CONTAINER_NAME" \
         --restart unless-stopped \
         -t -i \
@@ -296,8 +312,7 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         -w /workspace \
         -e DOCKER_HOST="$DOCKER_HOST_ENV" \
         -e TZ=Asia/Kuala_Lumpur \
-        --add-host host.docker.internal:host-gateway \
-        --add-host host.containers.internal:host-gateway \
+        "${ADD_HOST_FLAGS[@]}" \
         playground-tooling:latest \
         bash -c '
             if [ -f /project/setenv.sh ]; then
@@ -326,8 +341,27 @@ else
     fi
 fi
 
-# Enter the container
+# Enter the container (with retry to handle race condition on startup)
 echo ""
 echo "Entering container (type 'exit' to leave)..."
 echo ""
-$DOCKER exec -it "$CONTAINER_NAME" bash
+EXEC_ATTEMPTS=0
+EXEC_MAX=5
+while [ $EXEC_ATTEMPTS -lt $EXEC_MAX ]; do
+    if $DOCKER exec -it "$CONTAINER_NAME" bash 2>/dev/null; then
+        EXEC_ATTEMPTS=$EXEC_MAX
+    else
+        EXEC_ATTEMPTS=$((EXEC_ATTEMPTS + 1))
+        if [ $EXEC_ATTEMPTS -lt $EXEC_MAX ]; then
+            STATUS=$($DOCKER inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo 'missing')
+            if [ "$STATUS" = "exited" ]; then
+                echo "Container exited. Logs:"
+                $DOCKER logs "$CONTAINER_NAME"
+                $DOCKER rm -f "$CONTAINER_NAME" 2>/dev/null
+                exit 1
+            fi
+            echo "  waiting for exec... (attempt $EXEC_ATTEMPTS/$EXEC_MAX, status: $STATUS)"
+            sleep 1
+        fi
+    fi
+done

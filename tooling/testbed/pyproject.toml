@@ -1,0 +1,14 @@
+[project]
+name = "testbed"
+version = "0.1.0"
+description = "Gated AI Testbed — structured spec parsing, validation, and feedback for autonomous testbed creation"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+testbed = "testbed.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["testbed", "testbed.*"]

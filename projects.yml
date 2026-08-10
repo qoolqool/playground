@@ -1,5 +1,7 @@
 projects:
   playground: ~/lab/playground
   scdlt-poc: ~/lab/scdlt-poc
+  scdlt-x: ~/lab/scdlt-x
+  quic: ~/lab/quic
   # Add your projects here:
   # my-project: ~/lab/my-project
