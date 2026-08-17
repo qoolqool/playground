@@ -29,9 +29,43 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+# --- Obs instrumentation (1B shim) ---
+# Emit retrieval events to the obs dashboard. Optional: if the obs package
+# isn't present, searches still work normally (no event emitted).
+_OBS_DIR = Path("/project/tooling/obs")
+try:
+    if _OBS_DIR.is_dir():
+        # obs package root is /project/tooling (obs/ is the package dir)
+        sys.path.insert(0, str(_OBS_DIR.parent))
+        from obs import emit_search
+    else:
+        emit_search = None
+except Exception:
+    emit_search = None
+
+
+def _emit_search(query, backend, latency_ms, results, error=None):
+    """Emit an obs event if the obs package is available."""
+    if emit_search is None:
+        return
+    try:
+        emit_search(
+            query_original=query,
+            query_used=query,
+            backend=backend,
+            latency_ms=latency_ms,
+            top_k=len(results) if results else 0,
+            results=[{"id": r.get("fqn"), "score": r.get("score"),
+                      "title": r.get("title")} for r in results],
+            error=error,
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -388,14 +422,19 @@ def cmd_search(args):
     if args.limit:
         params += f"&limit={args.limit}"
 
+    t0 = time.time()
     result = api(f"/search{params}")
+    latency_ms = (time.time() - t0) * 1000
     if result is None:
+        _emit_search(args.query, "central-kb", latency_ms, [], error="api error")
         return
+
+    results = result.get("results", [])
+    _emit_search(args.query, "central-kb", latency_ms, results)
 
     if args.json_output:
         print(json.dumps(result, indent=2))
     else:
-        results = result.get("results", [])
         scope_label = f" [scope={scope}]" if scope else ""
         print(f"Search: \"{args.query}\"{scope_label}  ({len(results)} results)")
         for r in results:
@@ -509,10 +548,14 @@ def cmd_explain(args):
     limit = args.limit or (5 if args.llm else 10)
     params += f"&limit={limit}"
 
+    t0 = time.time()
     result = api(f"/search{params}")
+    latency_ms = (time.time() - t0) * 1000
     if result is None:
+        _emit_search(args.query, "central-kb", latency_ms, [], error="api error")
         return
     results = result.get("results", [])
+    _emit_search(args.query, "central-kb", latency_ms, results)
     if not results:
         print(f'No results for "{args.query}"')
         return

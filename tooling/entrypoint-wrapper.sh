@@ -53,7 +53,7 @@ if [ -d "$MARKETPLACE_SKILLS" ]; then
 fi
 
 SCRIPT_SYMLINKS=(
-  "search-kb-memory.py:../skills/search-kb/search-kb-memory.py"
+  "search-kb-memory.py:../obs/search_wrapper.py"
   "load-kb-to-memory.py:../skills/distill-and-index/load-kb-to-memory.py"
 )
 for entry in "${SCRIPT_SYMLINKS[@]}"; do
@@ -205,6 +205,29 @@ echo "|    Host IP (local models): $HOST_IP                     "
 echo "╚════════════════════════════════════════════════════════╝"
 
 alias vi=nvim
+
+# --- Propagate kb-cli source edits to the installed copy ---
+# The installed `kb` is a build-time copy; re-copy from source so obs
+# instrumentation and other edits take effect without a full image rebuild.
+if [ -f /project/tooling/skills/install-kb-cli/kb-cli.py ]; then
+  cp /project/tooling/skills/install-kb-cli/kb-cli.py /home/tool/.local/bin/kb
+  chmod +x /home/tool/.local/bin/kb
+  echo "Synced kb CLI from source"
+fi
+
+# --- Auto-start ollama serve (background) ---
+if ! pgrep -f 'ollama serve' >/dev/null 2>&1; then
+  nohup ollama serve >/dev/null 2>&1 &
+  echo "Started ollama serve (background)"
+fi
+
+# --- Auto-start obs dashboard server (background, port 8080) ---
+mkdir -p /project/.agent/obs
+if ! pgrep -f 'uvicorn obs.api:app' >/dev/null 2>&1; then
+  (cd /project/tooling && nohup uvicorn obs.api:app --host 0.0.0.0 --port 8080 \
+      > /project/.agent/obs/server.log 2>&1 &)
+  echo "Started obs dashboard server (http://<vm-ip>:8080/obs)"
+fi
 
 # Execute the main command. If no command is given, default to running ollama
 if [ $# -gt 0 ]; then

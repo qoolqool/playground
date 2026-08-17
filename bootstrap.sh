@@ -47,7 +47,7 @@ resolve_project_path() {
 # ---------- flag parsing ----------
 FORCE_REBUILD=false
 PULL_IMAGE=false
-SETUP_CENTRAL_KB=false
+SETUP_CENTRAL_KB=true
 QUICKSTART=false
 STOP_REQUESTED=false
 PROJECT_NAME=""
@@ -56,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -f|--force) FORCE_REBUILD=true; shift ;;
         -k|--setup-central-kb) SETUP_CENTRAL_KB=true; shift ;;
+        --no-central-kb) SETUP_CENTRAL_KB=false; shift ;;
         -p|--pull) PULL_IMAGE=true; shift ;;
         -q|--quickstart) QUICKSTART=true; shift ;;
         --stop) STOP_REQUESTED=true; shift ;;
@@ -126,10 +127,13 @@ if [ "$SETUP_CENTRAL_KB" = true ]; then
     echo "=== Central KB Setup ==="
     echo "Checking if central-kb is already running..."
 
+    # Ports bind to the Podman VM IP, not localhost. Use the VM IP for health checks.
+    KB_HOST="${PODMAN_VM_IP:-192.168.127.2}"
+
     CENTRAL_KB_RUNNING=false
     if command -v curl >/dev/null 2>&1; then
-        if curl -sf http://localhost:9000/health >/dev/null 2>&1 && \
-           curl -sf http://localhost:9001/health >/dev/null 2>&1; then
+        if curl -sf "http://${KB_HOST}:9000/health" >/dev/null 2>&1 && \
+           curl -sf "http://${KB_HOST}:9001/health" >/dev/null 2>&1; then
             CENTRAL_KB_RUNNING=true
         fi
     fi
@@ -163,7 +167,7 @@ if [ "$SETUP_CENTRAL_KB" = true ]; then
         echo "Waiting for embed-server (port 9001)..."
         EMBED_READY=false
         for i in $(seq 1 20); do
-            if curl -sf http://localhost:9001/health >/dev/null 2>&1; then
+            if curl -sf "http://${KB_HOST}:9001/health" >/dev/null 2>&1; then
                 EMBED_READY=true
                 break
             fi
@@ -181,7 +185,7 @@ if [ "$SETUP_CENTRAL_KB" = true ]; then
         echo "Waiting for central-kb API (port 9000)..."
         KB_READY=false
         for i in $(seq 1 10); do
-            if curl -sf http://localhost:9000/health >/dev/null 2>&1; then
+            if curl -sf "http://${KB_HOST}:9000/health" >/dev/null 2>&1; then
                 KB_READY=true
                 break
             fi
@@ -305,6 +309,7 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     $DOCKER run -d --name "$CONTAINER_NAME" \
         --restart unless-stopped \
         -t -i \
+        -p 8080:8080 \
         -v "${MOUNT_TARGET}:/workspace:${WORKSPACE_MODE}" \
         $ENV_CKB \
         -v "${SOCKET_MOUNT}:/var/run/docker.sock" \
