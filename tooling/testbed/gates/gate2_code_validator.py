@@ -809,6 +809,18 @@ def _check_depends_on(
 # Check 2: Required files exist
 # ---------------------------------------------------------------------------
 
+def _is_e2e_suite(ts) -> bool:
+    """A test suite is E2E if its name is 'e2e' or its tags/markers mark it live.
+
+    E2E suites belong to Gate 4, not Gate 2. Gate 2 validates and runs only the
+    unit suites.
+    """
+    name = (ts.name or "").lower()
+    tags = {t.lower() for t in (ts.tags or [])}
+    markers = {m.lower() for m in (ts.markers or [])}
+    return name == "e2e" or bool(tags & {"e2e", "live"}) or bool(markers & {"live"})
+
+
 def _check_required_files(
     spec: TestbedSpec,
     workspace_root: Path,
@@ -820,8 +832,10 @@ def _check_required_files(
     # Compose file itself (already checked in _load_compose)
     # Build context Dockerfiles (checked in _check_build)
 
-    # Check test suite paths
+    # Check test suite paths (unit suites only; e2e belongs to Gate 4)
     for ts in spec.test_suites:
+        if _is_e2e_suite(ts):
+            continue
         test_path = workspace_root / ts.path.lstrip("/")
         if not test_path.exists():
             diagnostics.append(Diagnostic(
@@ -916,8 +930,10 @@ def _check_test_suite_presence(
     diagnostics: list[Diagnostic],
     actions: list[Action],
 ) -> None:
-    """Check that test suite paths exist on disk."""
+    """Check that unit test suite paths exist on disk."""
     for ts in spec.test_suites:
+        if _is_e2e_suite(ts):
+            continue
         test_path = workspace_root / ts.path.lstrip("/")
         if not test_path.exists():
             diagnostics.append(Diagnostic(
