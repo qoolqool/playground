@@ -21,7 +21,7 @@ Use this skill when the user asks to:
 
 **Do NOT use** when: fixing a trivial bug (one-line change), performing routine maintenance (version bumps), or doing exploratory prototyping (though prototyping may feed into Phase 0 audit).
 
-**Mandatory gate pre-conditions:** Before writing code (Phase 3), Gate 1 must be PASS. After every implementation batch and before HARDEN, Gate 2 must be PASS. Before HARDEN or any "done" claim, Gate 3 must also be PASS. Before HARDEN or any "done" claim, Gate 4 must also be PASS — the stack must be running, healthy, and E2E tests passing. See the `gated-testbed` skill for invocation and action consumption.
+**Mandatory gate pre-conditions:** Before writing code (Phase 3), Gate 1 must be PASS. After every implementation batch and before HARDEN, Gate 2 must be PASS. Before HARDEN or any "done" claim, Gate 3 must also be PASS. Before HARDEN or any "done" claim, Gate 4 must also be PASS — the stack must be running, healthy, and E2E tests passing. See the `quality-gates` skill for invocation and action consumption.
 
 ## Mandatory Skill Usage
 
@@ -44,6 +44,8 @@ Use this skill when the user asks to:
 
 **DooD-Specific Requirement:** If the user mentions "DooD", "Docker-outside-of-Docker", or the project has a DooD setup, you MUST follow the DooD-specific patterns in this skill and reference the appropriate sub-skills above. Do NOT explore alternative solutions.
 
+**Test-runner decision (small vs large projects):** The test-runner container is the SCDLT pattern for running integration/E2E tests from inside the compose network. For small projects (a few services, the E2E test hits published ports), you may remove the test-runner and run the E2E test directly on the host. This is an explicit decision, not a guess — see the `quality-gates` skill's "Test-Runner Decision" section. When in doubt, ask the user.
+
 ## TDD Requirement
 
 **Every implementation task MUST include unit tests:**
@@ -51,7 +53,7 @@ Use this skill when the user asks to:
 - **New functions/features:** Write the test FIRST (Red), then implement (Green), then refactor
 - **Modifying existing code:** Run existing tests before and after to ensure no regression
 - **Infrastructure additions:** Use `tdd-dood-compose-infra` pattern — write failing integration tests from test-runner first
-- **Test location:** Tests go in `tests/` directory, run from test-runner container
+- **Test location:** Tests go in `tests/` directory. Unit tests run on the host; E2E tests run from the test-runner container (or directly on the host for small projects — see the `quality-gates` skill's "Test-Runner Decision")
 - **Test verification:** Each test must verify specific, observable behavior
 
 **No exceptions:** If a task cannot be tested, it should not be implemented. Document why testing is impossible as a risk.
@@ -107,9 +109,9 @@ This methodology assumes a **Docker-outside-of-Docker** development environment 
 
 **MANDATORY:** When Phase 0 audit or Phase 1 design identifies a need matching the table above, you MUST explicitly invoke the corresponding skill. Do NOT reinvent solutions.
 
-## Mandatory Gate Pre-Conditions (gated-testbed)
+## Mandatory Gate Pre-Conditions (quality-gates)
 
-The `gated-testbed` skill provides three quality gates that are non-negotiable pre-conditions of ADD phases. Do not re-implement gate logic here — reference the skill for invocation and action consumption.
+The `quality-gates` skill provides three quality gates that are non-negotiable pre-conditions of ADD phases. Do not re-implement gate logic here — reference the skill for invocation and action consumption.
 
 | Gate | When It Must Be PASS | What Happens If It Fails |
 |------|----------------------|--------------------------|
@@ -121,7 +123,7 @@ The `gated-testbed` skill provides three quality gates that are non-negotiable p
 **Hard rules:**
 - Do not auto-advance past a failing gate. Treat it like any other blocker: stop, report the GateFeedback, fix, re-validate.
 - Before any "done", "ready for review", or HARDEN claim, **all four gates must be PASS**. Run all four if any is stale.
-- See the `gated-testbed` skill for invocation syntax and how to consume `diagnostics` + `actions`.
+- See the `quality-gates` skill for invocation syntax and how to consume `diagnostics` + `actions`.
 
 ## Core Principle: Audit Before You Build
 
@@ -244,6 +246,8 @@ Propose 2-3 different approaches with trade-offs. Present options conversational
 **Step 3: Write the design document**
 Write to `docs/sdlc/02-design/YYYY-MM-DD-<topic>-design.md` covering:
 
+**MANDATORY:** This path is non-negotiable. Do NOT use a flat `docs/design.md` or any other location. The numbered `docs/sdlc/` tree is the only valid home for SDLC documents.
+
 ```markdown
 ## Overview
 One-paragraph description.
@@ -332,6 +336,8 @@ Expected: PASS
 
 **Artifact:** Implementation plan at `docs/sdlc/03-implementation-plans/YYYY-MM-DD-<topic>-impl.md`
 
+**MANDATORY:** This path is non-negotiable. Do NOT use a flat `docs/` path. The numbered `docs/sdlc/` tree is the only valid home for SDLC documents.
+
 **After writing:** Add an entry for this document in `docs/sdlc/INDEX.md` under the Implementation Plans section (View A) and the relevant feature track (View B).
 
 **⏸️ GATE:** Present the task overview and dependency chain. Say: *"Plan saved. Ready to start executing? I'll process tasks in batches and report after each batch."* Do NOT proceed to Phase 3 without explicit approval.
@@ -343,7 +349,7 @@ Expected: PASS
 **Goal:** Implement the plan incrementally with TDD, using subagents for independent tasks.
 
 **⏸️ GATE CHECK — Gate 1 must be PASS before starting.**
-Before writing or changing any file under `/workspace`, confirm Gate 1 is PASS on the approved spec. If not, stop and run `./testbed.sh validate <spec.json>` via the `gated-testbed` skill. Do not start implementation until `status=pass`.
+Before writing or changing any file under `/workspace`, confirm Gate 1 is PASS on the approved spec. If not, stop and run `./testbed.sh validate <spec.json>` via the `quality-gates` skill. Do not start implementation until `status=pass`.
 
 **⏸️ GATE CHECK — Gate 2 after every batch.**
 After every EXECUTE batch that touches compose, Dockerfiles, configs, tests, or scripts, run `./testbed.sh gate2 --spec <spec.json> --workspace /workspace`. If it fails, apply the returned `actions`, fix, and re-run before presenting the batch for human review.
@@ -464,7 +470,7 @@ If any fails, return to fixes — do not present HARDEN as done. Only when all t
    - [ ] Verification gates pass (`./scripts/bootstrap.sh verify` scores ≥ threshold)
    - [ ] Gotchas documented somewhere findable
    - [ ] All commits pushed
-6. **Write the implementation result** — `docs/sdlc/04-implementation-results/YYYY-MM-DD-<topic>.md` covering what actually shipped, actual commit hashes, test counts, deviations from plan (with reasons). See `design-impl-result-docs` skill.
+6. **Write the implementation result** — `docs/sdlc/04-implementation-results/YYYY-MM-DD-<topic>.md` covering what actually shipped, actual commit hashes, test counts, deviations from plan (with reasons). See `design-impl-result-docs` skill. **MANDATORY:** This path is non-negotiable. Do NOT use a flat `docs/` path.
 7. **Update INDEX.md** — Add an entry for the result document in `docs/sdlc/INDEX.md` under the Implementation Results section (View A) and the relevant feature track (View B).
 
 **DooD-specific verification:**
@@ -543,6 +549,7 @@ When setting up a new DooD + Docker Compose microservices project, follow this c
 - **Writing the plan before the design is approved** wastes effort on a plan for an approach that gets changed in review.
 - **Not updating the design/plan after discovery** — if Phase 3 reveals something that invalidates the design, go BACK to Phase 1, don't forge ahead with a bad design.
 - **Skipping verification criteria in the design doc** — without testable criteria, there's nothing to verify against.
+- **Writing SDLC docs to a flat `docs/` path** — the design, plan, and result docs MUST go in the numbered `docs/sdlc/` tree (`02-design/`, `03-implementation-plans/`, `04-implementation-results/`), each registered in `docs/sdlc/INDEX.md`. A flat `docs/design.md` is wrong even for small or learning projects.
 - **Testing all integrations at once instead of incrementally** — wire one, test it, fix, then wire the next.
 - **Batch too large** — if a batch exceeds 5 tasks or takes more than 15 minutes, it's too large for meaningful feedback. Default is 3 tasks.
 - **Shell quoting in docker exec** — single-quote the Python block, pass env vars with `-e`, avoid double quotes that trigger host shell expansion.
@@ -559,6 +566,7 @@ After applying ADD, confirm:
 3. Design doc exists at `docs/sdlc/02-design/YYYY-MM-DD-<topic>-design.md` with verification criteria and out-of-scope
 4. Implementation plan exists at `docs/sdlc/03-implementation-plans/YYYY-MM-DD-<topic>-impl.md` with exact code and commands
 5. `docs/sdlc/INDEX.md` updated with entries for all new documents (design, plan, result) in both View A and View B
+5. Each SDLC doc landed in the correct numbered `docs/sdlc/` stage directory (design in `02-design/`, plan in `03-implementation-plans/`, result in `04-implementation-results/`), not a flat `docs/` path
 6. Each implementation commit corresponds to a plan task (traceable)
 6. Human was asked for review at every phase gate — no auto-advance
 7. All verification criteria from the design doc are addressed
