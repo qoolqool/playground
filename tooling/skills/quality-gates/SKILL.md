@@ -146,6 +146,25 @@ There are two ways Gate 4 can run the E2E test. Pick one explicitly; do not gues
 
 **Decision rule:** for small projects (a few services, the E2E test hits published ports), remove the test-runner and run the E2E test directly on the host. For larger projects where the E2E test must reach services by internal name, keep the test-runner. This is an explicit decision, not a guess. When in doubt, ask the user which pattern they want.
 
+#### Callflow Verification (inter-component contracts)
+
+The E2E happy-flow is a black-box check: it proves the final user-visible result. It does not prove that each inter-component call follows the correct contract (right target, right payload, right order). A wiring error can pass a naive E2E and only surface once the whole app is assembled.
+
+Gate 4 therefore also walks the spec's `callflow` section: each declared edge is a directional call (source → target) with an expected result, verified before the E2E happy-flow runs. It follows the declare-don't-execute rule:
+
+1. **The spec declares the callflow as data.** An edge names the source, target, a protocol discriminator (`http`, `verify-hook`, ...), the request, and the expected result (`mode: exact | contains | success | verify_hook`).
+2. **An adapter executes each edge.** A protocol adapter knows HOW to make the call. `http` does a real HTTP request to the target's published port and compares the body/status against the expected result. New protocols register adapters; they never change the spec schema.
+3. **verify_hook handles non-request/response flows.** Async events, eventual consistency, DLT state transitions, side effects. The spec points at a project-owned checker script; the gate runs it and reads the exit code / failure reason.
+4. **Gate 2 statically validates the callflow shape.** Edge ids are unique, all referenced services exist, http edges carry method+path, and a verify_hook points at an existing file. This is cheap and runs before any code, so a bad contract is caught at its source.
+
+Run a callflow check during EXECUTE too: right after wiring a component pair, bring up just that pair and verify the single directional call. This catches a broken A→B link when it is cheapest to fix, before the full app is assembled. Waiting until Gate 4 (full stack) reproduces the late-fix problem.
+
+Case-study example (`consumer->api.items`): the consumer's call to `GET /items` must return exactly the three catalog items. If the API returns the wrong shape or the consumer hits the wrong endpoint, the callflow edge fails with a per-edge diagnostic naming the caller, the callee, and the actual vs expected result.
+
+```bash
+./testbed.sh gate4 --workspace /workspace
+```
+
 ## How to Consume Gate Feedback
 
 - `status == "pass"` means you may proceed. Still read the warnings.
