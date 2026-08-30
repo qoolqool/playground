@@ -13,10 +13,12 @@ The gate checks:
   1. Lifecycle / readiness — is the stack up? If not, attempt bring-up.
   2. Verify gate — run bootstrap.sh verify (or equivalent), parse pass/fail.
   3. Unhealthy services — if verify names failing services, emit per-service diagnostics.
-  4. E2E test suite — run the project's e2e test suite (owned by Gate 4, not
+  4. Inter-component callflow — walk every declared callflow edge against its
+     expected result via a protocol adapter or a project-owned verify hook.
+  5. E2E test suite — run the project's e2e test suite (owned by Gate 4, not
      Gate 2) as the integration gate. Runs via a test-runner container when one
      exists, or directly on the host for small projects.
-  5. Failure evidence — attach short, truncated command output in diagnostics.
+  6. Failure evidence — attach short, truncated command output in diagnostics.
 
 Hard rule:
   After Gate 3 passes → call validate_runtime() →
@@ -56,6 +58,10 @@ ERROR_CODES = {
     "G4_VERIFY_FAILED": "bootstrap.sh verify reported failures",
     "G4_SERVICE_UNHEALTHY": "A specific service is unhealthy",
     "G4_E2E_TEST_FAILED": "E2E happy-flow integration test failed",
+    "G4_CALLFLOW_FAILED": "Inter-component callflow verification failed",
+    "G4_CALLFLOW_UNSUPPORTED": "No adapter registered for a callflow protocol",
+    "G4_CALLFLOW_DISCOVERY": "Could not resolve a callflow target or hook",
+    "G4_SERVICE_ABSENT": "Callflow target service absent from the spec",
     "G4_COMMAND_ERROR": "Tooling or subprocess invocation error",
 }
 
@@ -432,7 +438,177 @@ def _run_verify(
 
 
 # ---------------------------------------------------------------------------
-# Check 3: E2E happy-flow integration test
+# Check 3: Inter-component callflow verification
+# ---------------------------------------------------------------------------
+
+def _resolve_base_host(spec_data: Optional[dict]) -> str:
+    """Resolve the host where published ports are reachable.
+
+    Preference order:
+      1. ``metadata.callflow_base_host`` in the spec
+      2. the host parsed from ``metadata.dood_endpoint`` (e.g. tcp://IP:2375)
+      3. the CALLFLOW_BASE_HOST env var
+      4. ``localhost``
+    """
+    meta = (spec_data or {}).get("metadata") or {}
+    cfg_host = meta.get("callflow_base_host")
+    if cfg_host:
+        return str(cfg_host)
+    de = meta.get("dood_endpoint")
+    if isinstance(de, str) and de.startswith("tcp://"):
+        host = de[len("tcp://"):].rsplit(":", 1)[0]
+        if host:
+            return host
+    if os.environ.get("CALLFLOW_BASE_HOST"):
+        return os.environ["CALLFLOW_BASE_HOST"]
+    return "localhost"
+
+
+def _load_callflow(spec_path: Path) -> list[dict]:
+    """Read the spec's callflow edges. Returns [] when none are declared."""
+    try:
+        data = json.loads(spec_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    return (data.get("callflow") or {}).get("edges", []) or []
+
+
+def _invoke_callflow_edge(
+    edge: dict,
+    services: list[dict],
+    base_host: str,
+    workspace_root: Path,
+    diagnostics: list[Diagnostic],
+    actions: list[Action],
+) -> bool:
+    """Execute one callflow edge and report a diagnostic on failure.
+
+    Returns True if the edge passed (or the target/contract could not be
+    resolved, which is reported as a hard failure with G4_CALLFLOW_DISCOVERY
+    or G4_SERVICE_ABSENT). Returns False on a genuine check failure.
+    """
+    from testbed.adapters import run_edge
+    from testbed.contracts.spec import ContractEdge, ServiceSpec
+
+    edge_id = edge.get("id", "<unnamed-edge>")
+    target_name = edge.get("target")
+    if not target_name:
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_DISCOVERY",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' has no target service",
+            location=Location(field=f"callflow.edges.{edge_id}", source=str(workspace_root)),
+        ))
+        actions.append(Action(
+            kind=ActionKind.fix,
+            description=f"Declare a 'target' service on callflow edge '{edge_id}'",
+            target_field=f"callflow.edges.{edge_id}.target",
+            priority=0,
+        ))
+        return False
+
+    target_service = next((s for s in services if s.get("name") == target_name), None)
+
+    # Convert raw JSON dicts into typed models the adapters expect.
+    edge_obj = ContractEdge(**edge)
+    target_obj = ServiceSpec(**target_service) if target_service else None
+
+    try:
+        result = run_edge(edge_obj, target_obj, base_host, workspace_root)
+    except Exception as exc:
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_DISCOVERY",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' could not be executed",
+            location=Location(field=f"callflow.edges.{edge_id}", source=str(workspace_root)),
+            detail=str(exc),
+        ))
+        return False
+
+    if result.passed:
+        return True
+
+    if target_service is None and "No adapter registered" not in (result.error or ""):
+        diagnostics.append(Diagnostic(
+            code="G4_SERVICE_ABSENT",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' target service '{target_name}' not found in spec",
+            location=Location(field=f"callflow.edges.{edge_id}.target", source=str(workspace_root)),
+        ))
+    elif "No adapter registered" in (result.error or ""):
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_UNSUPPORTED",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' uses unsupported protocol '{edge.get('protocol')}'",
+            location=Location(field=f"callflow.edges.{edge_id}.protocol", source=str(workspace_root)),
+            detail=result.error,
+        ))
+        actions.append(Action(
+            kind=ActionKind.fix,
+            description=f"Register an adapter for protocol '{edge.get('protocol')}' or switch the edge to 'verify-hook'",
+            target_field=f"callflow.edges.{edge_id}.protocol",
+            priority=1,
+        ))
+    else:
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_FAILED",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' ({edge.get('source')} -> {target_name}) failed",
+            location=Location(field=f"callflow.edges.{edge_id}", source=str(workspace_root)),
+            detail=result.error,
+        ))
+        actions.append(Action(
+            kind=ActionKind.fix,
+            description=f"Fix inter-component call '{edge.get('source')}' -> '{target_name}'. {result.error}",
+            target_field=f"callflow.edges.{edge_id}",
+            priority=0,
+        ))
+
+    return False
+
+
+def _run_callflow(
+    workspace_root: Path,
+    compose_path: Path,
+    diagnostics: list[Diagnostic],
+    actions: list[Action],
+) -> bool:
+    """Verify every declared inter-component callflow edge against its expected result.
+
+    Reads the spec's callflow section, dispatches each edge to a protocol
+    adapter (or project-owned verify hook), and reports a per-edge diagnostic
+    on any mismatch. Returns False if any edge fails.
+
+    If no callflow is declared in the spec, this check passes as optional.
+    """
+    spec_path = _find_spec(workspace_root)
+    if spec_path is None:
+        return True
+
+    try:
+        data = json.loads(spec_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return True
+
+    edges = (data.get("callflow") or {}).get("edges", []) or []
+    if not edges:
+        return True
+
+    base_host = _resolve_base_host(data)
+    services = data.get("services", [])
+    ok = True
+    for edge in edges:
+        passed = _invoke_callflow_edge(
+            edge, services, base_host, workspace_root, diagnostics, actions,
+        )
+        if not passed:
+            ok = False
+
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Check 4: E2E happy-flow integration test
 # ---------------------------------------------------------------------------
 
 def _compose_has_service(compose_path: Path, service_name: str) -> bool:
@@ -666,7 +842,26 @@ def validate_runtime(
             **feedback_kwargs,
         )
 
-    # --- Phase 3: E2E happy-flow integration test ---
+    # --- Phase 3: Inter-component callflow verification ---
+    callflow_passed = _run_callflow(workspace_root, compose_path, diagnostics, actions)
+
+    if not callflow_passed:
+        duration_ms = int((time.time() - start_time) * 1000)
+        metadata = {"attempt_number": attempt_number}
+        if previous_summary:
+            metadata["previous_summary"] = previous_summary
+
+        return GateFeedback(
+            status=GateStatus.fail,
+            diagnostics=diagnostics,
+            actions=_sort_and_cap_actions(actions),
+            duration_ms=duration_ms,
+            attempt_number=attempt_number,
+            metadata=metadata,
+            **feedback_kwargs,
+        )
+
+    # --- Phase 4: E2E happy-flow integration test ---
     e2e_passed = _run_e2e_happy_flow(
         workspace_root, compose_path, e2e_timeout, diagnostics, actions,
     )
