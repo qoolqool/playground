@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KB Obs — Retrieval Dashboard</title>
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#262b36; --txt:#e6e9ef; --mut:#8b93a3;
+          --acc:#4f8cff; --ok:#3fb950; --warn:#d29922; --err:#f85149; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); color:var(--txt); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .sub { color:var(--mut); font-size:12px; }
+  #conn { margin-left:auto; font-size:12px; color:var(--mut); }
+  #conn.live { color:var(--ok); }
+  main { padding:20px 24px; max-width:1100px; margin:0 auto; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card .label { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+  .card .value { font-size:22px; font-weight:600; margin-top:6px; }
+  .card .value small { font-size:12px; color:var(--mut); font-weight:400; }
+  .feed { display:flex; flex-direction:column; gap:8px; }
+  .ev { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 16px; }
+  .ev .row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .ev .q { font-weight:600; flex:1; min-width:200px; }
+  .ev .meta { font-size:12px; color:var(--mut); }
+  .badge { font-size:11px; padding:2px 8px; border-radius:20px; border:1px solid var(--line); }
+  .badge.local-vector { color:var(--acc); border-color:var(--acc); }
+  .badge.central-kb { color:var(--ok); border-color:var(--ok); }
+  .badge.ollama-fallback { color:var(--warn); border-color:var(--warn); }
+  .lat { font-size:12px; }
+  .used { font-size:11px; padding:2px 8px; border-radius:20px; }
+  .used.yes { background:var(--ok); color:#000; }
+  .used.no { background:var(--err); color:#fff; }
+  .used.null { background:var(--line); color:var(--mut); }
+  .err { color:var(--err); font-size:12px; }
+  .results { margin-top:10px; border-top:1px solid var(--line); padding-top:8px; display:none; }
+  .ev.open .results { display:block; }
+  .res { font-size:12px; padding:4px 0; border-bottom:1px dashed var(--line); }
+  .res .score { color:var(--acc); }
+  .res .title { color:var(--txt); }
+  .res .snip { color:var(--mut); }
+  .toggle { cursor:pointer; color:var(--mut); font-size:12px; user-select:none; }
+  .mark { cursor:pointer; font-size:11px; padding:2px 8px; border-radius:20px;
+          border:1px solid var(--line); background:transparent; color:var(--mut); }
+  .mark:hover { border-color:var(--ok); color:var(--ok); }
+  .mark.done { border-color:var(--ok); color:var(--ok); }
+  .empty { color:var(--mut); text-align:center; padding:40px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KB Obs</h1>
+  <span class="sub">retrieval decisions</span>
+  <span id="conn">connecting…</span>
+</header>
+<main>
+  <div class="cards">
+    <div class="card"><div class="label">Searches (10m)</div><div class="value" id="c-count">–</div></div>
+    <div class="card"><div class="label">Avg latency</div><div class="value" id="c-avg">–<small> ms</small></div></div>
+    <div class="card"><div class="label">p95 latency</div><div class="value" id="c-p95">–<small> ms</small></div></div>
+    <div class="card"><div class="label">Embed mem</div><div class="value" id="c-mem">–<small> MB</small></div></div>
+    <div class="card"><div class="label">Total events</div><div class="value" id="c-total">–</div></div>
+  </div>
+  <div class="feed" id="feed"><div class="empty">Waiting for retrieval events…</div></div>
+</main>
+<script>
+const feed = document.getElementById('feed');
+const conn = document.getElementById('conn');
+let events = [];
+
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function badge(backend){
+  const b = backend || 'unknown';
+  return `<span class="badge ${esc(b)}">${esc(b)}</span>`;
+}
+function usedBadge(u){
+  if (u === true) return '<span class="used yes">used</span>';
+  if (u === false) return '<span class="used no">unused</span>';
+  return '<span class="used null">used:?</span>';
+}
+function render(){
+  if (!events.length){ feed.innerHTML = '<div class="empty">Waiting for retrieval events…</div>'; return; }
+  feed.innerHTML = events.map((e,i) => {
+    const top = (e.results && e.results[0]) || null;
+    const topScore = top && typeof top.score === 'number' ? top.score.toFixed(3) : '–';
+    const resHtml = (e.results||[]).map(r =>
+      `<div class="res"><span class="score">${typeof r.score === 'number' ? r.score.toFixed(3) : '–'}</span> <span class="title">${esc(r.title||r.id||'')}</span> <span class="snip">${esc((r.snippet||'').slice(0,80))}</span></div>`
+    ).join('');
+    return `<div class="ev" id="ev-${i}">
+      <div class="row">
+        <span class="q">${esc(e.query_used || e.query_original || '')}</span>
+        ${badge(e.backend)}
+        <span class="lat">${e.latency_ms != null ? e.latency_ms+'ms' : '–'}</span>
+        <span class="meta">top ${e.top_k ?? '–'} · score ${topScore}</span>
+        ${usedBadge(e.used)}
+        ${e.used === true ? '' : `<button class="mark" onclick="markUsed('${esc(e.id||'')}')">use</button>`}
+        ${e.error ? `<span class="err">${esc(e.error)}</span>` : ''}
+        <span class="toggle" onclick="toggle(${i})">▸</span>
+      </div>
+      <div class="results">${resHtml || '<div class="res">no results</div>'}</div>
+    </div>`;
+  }).join('');
+}
+function toggle(i){
+  const el = document.getElementById('ev-'+i);
+  el.classList.toggle('open');
+  el.querySelector('.toggle').textContent = el.classList.contains('open') ? '▾' : '▸';
+}
+function markUsed(id){
+  if (!id) return;
+  fetch('/obs/used', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ id }) })
+    .then(r=>r.json()).then(res => {
+      if (res.marked > 0){
+        const ev = events.find(e => e.id === id);
+        if (ev) ev.used = true;
+        render(); refreshSummary();
+      }
+    }).catch(()=>{});
+}
+function updateSummary(s){
+  document.getElementById('c-count').textContent = s.search_count ?? '–';
+  document.getElementById('c-avg').textContent = s.avg_latency_ms != null ? s.avg_latency_ms : '–';
+  document.getElementById('c-p95').textContent = s.p95_latency_ms != null ? s.p95_latency_ms : '–';
+  document.getElementById('c-mem').textContent = s.embed_memory_mb != null ? s.embed_memory_mb : '–';
+  document.getElementById('c-total').textContent = s.total_events ?? '–';
+}
+async function refreshSummary(){
+  try { const r = await fetch('/obs/summary'); updateSummary(await r.json()); } catch(e){}
+}
+// SSE live feed
+function connect(){
+  const es = new EventSource('/obs/events');
+  es.onopen = () => { conn.textContent = '● live'; conn.classList.add('live'); };
+  es.onerror = () => { conn.textContent = 'reconnecting…'; conn.classList.remove('live'); };
+  es.onmessage = (m) => {
+    try { events.push(JSON.parse(m.data)); if (events.length > 200) events.shift(); render(); refreshSummary(); } catch(e){}
+  };
+}
+// initial load
+fetch('/obs/raw?n=50').then(r=>r.json()).then(d => { events = d; render(); }).catch(()=>{});
+refreshSummary();
+setInterval(refreshSummary, 10000);
+// periodic re-fetch so CLI-driven 'used' changes show up
+setInterval(() => {
+  fetch('/obs/raw?n=200').then(r=>r.json()).then(d => { events = d; render(); }).catch(()=>{});
+}, 15000);
+connect();
+</script>
+</body>
+</html>

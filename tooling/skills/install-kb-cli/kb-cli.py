@@ -1,714 +1,768 @@
 #!/usr/bin/env python3
+"""kb CLI — Central KB command-line tool.
+
+Supports both legacy and OKF (Open Knowledge Format) submission.
 """
-kb — Command-line client for the Central Knowledge Base server.
-
-Works as a standalone CLI — no external package required. Auto-generates
-embeddings via Ollama when submitting entries.
-
-Configuration (env vars or flags):
-  CENTRAL_KB_URL       Server URL  (default: auto-detected from gateway IP, port 9000)
-  CENTRAL_KB_PROJECT   Project name (required for submit/pull/drift)
-  KB_EMBED_MODEL       Ollama embedding model (default: bge-large:latest, 1024-dim)
-
-Usage:
-  kb submit --project <name>                  # Submit local KB YAML files
-  kb submit --project <name> --dir /path      # Submit from custom directory
-  kb pull --project <name>                     # Pull entries from server
-  kb search "query"                            # Uses CENTRAL_KB_PROJECT as scope
-  kb search "query" --scope <name>              # Override scope explicitly
-  kb drift --project <name>                     # Check for drift
-  kb lint --project <name>                      # Run memory lint (rule-based)
-  kb lint --project <name> --llm                # Full lint with contradiction detection
-  kb candidates                                  # List promotion candidates
-  kb conflicts                                   # List conflicts
-  kb conflicts <id> resolve --resolution <text> # Resolve a conflict
-  kb health                                      # Check server health
-"""
-
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
-import urllib.request
-import urllib.error
 from pathlib import Path
+from typing import Optional, Tuple
+
+import httpx
+import yaml
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def detect_host_url() -> str:
-    """Auto-detect the Central KB server URL from the container host."""
-    port = 9000
-    # 1. Try host.containers.internal (Podman) and host.docker.internal (Docker)
-    for hostname in ("host.containers.internal", "host.docker.internal"):
-        url = f"http://{hostname}:{port}"
-        try:
-            req = urllib.request.Request(f"{url}/health", method="GET")
-            urllib.request.urlopen(req, timeout=3)
-            return url
-        except Exception:
-            continue
-    # 2. Try default gateway from routing table
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["ip", "route", "show", "default"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for part in result.stdout.split():
-            if part not in ("default", "via", "dev") and "." in part:
-                url = f"http://{part}:{port}"
-                try:
-                    req = urllib.request.Request(f"{url}/health", method="GET")
-                    urllib.request.urlopen(req, timeout=3)
-                    return url
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    # 3. Last resort
-    return f"http://localhost:{port}"
+CENTRAL_KB_URL_ENV = "CENTRAL_KB_URL"
+CENTRAL_KB_PROJECT_ENV = "CENTRAL_KB_PROJECT"
 
 
-def server_url() -> str:
-    env_val = os.environ.get("CENTRAL_KB_URL", "").rstrip("/")
-    if env_val:
-        return env_val
-    return detect_host_url()
+def make_fqn(scope: str, namespace: str, key: str) -> str:
+    return f"{scope}:{namespace}:{key}"
 
 
-def project_name() -> str:
-    return os.environ.get("CENTRAL_KB_PROJECT", "")
+def parse_fqn(fqn: str) -> Tuple[str, str, str]:
+    parts = fqn.split(":", 2)
+    if len(parts) != 3:
+        raise ValueError(f"Invalid FQN: {fqn}")
+    return tuple(parts)
 
 
-def embed_model() -> str:
-    return os.environ.get("KB_EMBED_MODEL", "bge-large:latest")
-
-
-# Embed-server HTTP sidecar: auto-detect and cache
-_EMBED_HTTP_URL = None
-
-
-def _detect_embed_http_url() -> str | None:
-    """Auto-detect the Central KB embed-server HTTP endpoint."""
-    for host in ("host.containers.internal", "host.docker.internal"):
-        url = f"http://{host}:9001"
-        try:
-            req = urllib.request.Request(f"{url}/health", method="GET")
-            resp = urllib.request.urlopen(req, timeout=3)
-            data = json.loads(resp.read())
-            if data.get("model_ready"):
-                return url
-        except Exception:
-            continue
+def build_central_url(env_url: Optional[str]) -> Optional[str]:
+    if env_url:
+        return env_url.rstrip("/")
     return None
 
 
-def _embed_via_http(text: str) -> list[float] | None:
-    """Try embed-server HTTP sidecar — ~100ms."""
-    global _EMBED_HTTP_URL
-    if _EMBED_HTTP_URL is None:
-        _EMBED_HTTP_URL = _detect_embed_http_url()
-    if not _EMBED_HTTP_URL:
-        return None
-    try:
-        payload = json.dumps({"text": text[:512]}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{_EMBED_HTTP_URL}/embed",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        resp = urllib.request.urlopen(req, timeout=10)
-        result = json.loads(resp.read())
-        if "error" in result:
-            return None
-        return result["embedding"]
-    except Exception:
-        return None
+def _make_key_from_title(title: str) -> str:
+    """Convert a title to a URL-safe key."""
+    key = title.lower().strip()
+    key = re.sub(r"[^a-z0-9]+", "-", key)
+    key = key.strip("-")
+    return key[:100] or "untitled"
 
 
-def api(path: str, *, method: str = "GET", body: dict | None = None, timeout: int = 30) -> dict:
-    """Call the Central KB API and return parsed JSON."""
-    url = f"{server_url()}{path}"
-    data = json.dumps(body).encode("utf-8") if body else None
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method=method,
-    )
+def _map_type_to_namespace(okf_type: str) -> str:
+    """Map an OKF type to a namespace for storage."""
+    type_lower = okf_type.lower()
+    if "decision" in type_lower:
+        return "decisions"
+    elif "pattern" in type_lower or "playbook" in type_lower or "runbook" in type_lower:
+        return "patterns"
+    elif "session" in type_lower:
+        return "sessions"
+    elif "metric" in type_lower:
+        return "metrics"
+    elif "table" in type_lower or "dataset" in type_lower:
+        return "tables"
+    else:
+        return "concepts"
+
+
+def _validate_okf_markdown(content: str) -> dict:
+    """Validate OKF markdown and return parsed frontmatter.
+
+    Returns dict with 'valid' bool, 'errors' list, and 'frontmatter' dict.
+    """
+    result = {"valid": True, "errors": [], "frontmatter": {}, "body": ""}
+
+    # Check for YAML frontmatter
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", content, re.DOTALL)
+    if not fm_match:
+        result["valid"] = False
+        result["errors"].append("Missing YAML frontmatter block (must start with '---' and end with '---')")
+        return result
+
+    fm_raw = fm_match.group(1)
+    body = fm_match.group(2).strip()
+
     try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8")
-        try:
-            detail = json.dumps(json.loads(detail), indent=2)
-        except Exception:
-            pass
-        print(f"HTTP {e.code}: {detail}", file=sys.stderr)
-        if e.code == 500:
-            print("Server error (500) — this is a server-side issue, not a CLI problem.", file=sys.stderr)
-            print("Possible causes: mixed vector dimensions in DB, server needs restart.", file=sys.stderr)
-        return None
-    except urllib.error.URLError as e:
-        print(f"Connection error: {e.reason}", file=sys.stderr)
-        print(f"  Is the server running at {server_url()}?", file=sys.stderr)
+        fm = yaml.safe_load(fm_raw)
+    except yaml.YAMLError as e:
+        result["valid"] = False
+        result["errors"].append(f"Invalid YAML frontmatter: {e}")
+        return result
+
+    if not isinstance(fm, dict):
+        result["valid"] = False
+        result["errors"].append("Frontmatter must be a YAML mapping")
+        return result
+
+    # Check required 'type' field
+    type_val = fm.get("type")
+    if not type_val or not isinstance(type_val, str) or not type_val.strip():
+        result["valid"] = False
+        result["errors"].append("Missing or empty required field: 'type'")
+
+    result["frontmatter"] = fm
+    result["body"] = body
+    return result
+
+
+def cmd_submit(args: argparse.Namespace):
+    project = args.project or os.environ.get(CENTRAL_KB_PROJECT_ENV, "unknown")
+    source = args.source or "local:cli"
+
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
         sys.exit(1)
 
+    # Determine input source
+    okf_entries = []
 
-def simhash_64(text: str) -> int:
-    """Compute 64-bit simhash, guaranteed to fit in SQLite signed INT64."""
-    import hashlib
-    features = text.lower().split()
-    v = [0] * 64
-    for feature in features:
-        h = int(hashlib.sha256(feature.encode()).hexdigest(), 16)
-        for i in range(64):
-            if h & (1 << i):
-                v[i] += 1
-            else:
-                v[i] -= 1
-    fingerprint = 0
-    for i in range(64):
-        if v[i] >= 0:
-            fingerprint |= (1 << i)
-    # Convert to signed int64 for SQLite compatibility
-    if fingerprint >= (1 << 63):
-        fingerprint -= (1 << 64)
-    return fingerprint
+    if args.okf_dir:
+        # Read OKF markdown files from directory
+        kb_dir = Path(args.okf_dir)
+        if not kb_dir.is_dir():
+            print(f"Error: OKF directory not found: {kb_dir}", file=sys.stderr)
+            sys.exit(1)
 
-
-def get_embedding(text: str) -> list[float]:
-    """Generate embedding vector — tries embed-server HTTP, falls back to Ollama."""
-    # 1. Try embed-server HTTP sidecar (~100ms)
-    vec = _embed_via_http(text)
-    if vec is not None:
-        return vec
-    # 2. Fallback to Ollama (~330ms)
-    model = embed_model()
-    payload = json.dumps({"model": model, "prompt": text}).encode("utf-8")
-    req = urllib.request.Request(
-        "http://localhost:11434/api/embeddings",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        resp = urllib.request.urlopen(req, timeout=120)
-        result = json.loads(resp.read())
-        return result["embedding"]
-    except urllib.error.URLError as e:
-        print(f"Embedding error: {e.reason}", file=sys.stderr)
-        print(f"  No embed-server HTTP or Ollama available. Tried:", file=sys.stderr)
-        print(f"    1. embed-server HTTP sidecar (host.containers.internal:9001) — not reachable", file=sys.stderr)
-        print(f"    2. Ollama localhost:11434 — {e.reason}", file=sys.stderr)
-        print(f"  Fix: start embed-server OR run: ollama serve && ollama pull {model}", file=sys.stderr)
-        sys.exit(1)
-    except KeyError:
-        print(f"Ollama returned unexpected response for model '{model}'", file=sys.stderr)
-        print(f"  Try: ollama pull {model}", file=sys.stderr)
-        sys.exit(1)
-
-
-def load_kb_entries(kb_dir: Path) -> list[dict]:
-    """Read YAML knowledge base entries from the standard directory layout."""
-    entries: list[dict] = []
-    for namespace in ("decisions", "patterns", "sessions", "gotchas", "rules"):
-        ns_dir = kb_dir / namespace
-        if not ns_dir.is_dir():
-            continue
-        for fname in sorted(ns_dir.iterdir()):
-            if not fname.suffix in (".yaml", ".yml"):
+        for md_file in sorted(kb_dir.rglob("*.md")):
+            # Skip reserved filenames
+            if md_file.name in ("index.md", "log.md"):
                 continue
-            raw = fname.read_text()
-            key = fname.stem
-            title = ""
-            for line in raw.splitlines():
-                if line.startswith("title:"):
-                    title = line.split(":", 1)[1].strip().strip("\"'")
-                    break
+            try:
+                content = md_file.read_text()
+                validation = _validate_okf_markdown(content)
+                if not validation["valid"]:
+                    print(f"  ⚠  Skipping {md_file.relative_to(kb_dir)}: "
+                          f"{'; '.join(validation['errors'])}", file=sys.stderr)
+                    continue
+                okf_entries.append({
+                    "markdown": content,
+                })
+                print(f"  ✓ {md_file.relative_to(kb_dir)}")
+            except Exception as e:
+                print(f"  ✗ {md_file.relative_to(kb_dir)}: {e}", file=sys.stderr)
+
+        if not okf_entries:
+            print("No valid OKF entries found.")
+            return
+
+    elif args.local_db:
+        # Legacy: read from local SQLite
+        import sqlite3
+        db_path = args.local_db
+        if not os.path.exists(db_path):
+            print(f"Error: Local KB not found: {db_path}", file=sys.stderr)
+            sys.exit(1)
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT key, namespace, content, metadata_json FROM embeddings"
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            print("No entries found in local KB.")
+            return
+
+        from app.dedup import simhash_64
+
+        entries = []
+        for key, namespace, content, meta_json in rows:
+            meta = json.loads(meta_json) if meta_json else {}
+            title = meta.get("title", key)
             entries.append({
                 "namespace": namespace,
                 "key": key,
                 "title": title,
-                "content": raw,
+                "content": content,
+                "metadata": meta,
+                "simhash": simhash_64(f"{title}\n{content}"[:1000]),
             })
-    return entries
 
+        payload = {"project": project, "source": source, "entries": entries}
+        resp = httpx.post(f"{url}/submit", json=payload, timeout=120.0)
+        resp.raise_for_status()
+        data = resp.json()
 
-def check_ollama_model(model: str) -> None:
-    """Verify the embedding model is available in Ollama."""
-    try:
-        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-        resp = urllib.request.urlopen(req, timeout=10)
-        data = json.loads(resp.read())
-        names = [m.get("name", "") for m in data.get("models", [])]
-        if not any(n.startswith(model.split(":")[0]) for n in names):
-            print(f"⚠️  Embedding model '{model}' not found in Ollama. Pulling...")
-            os.system(f"ollama pull {model}")
-    except Exception:
-        pass  # Will fail later when embedding is attempted
-
-
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-
-def cmd_health(_args):
-    result = api("/health")
-    if result is None:
+        print(f"Submit to {project}:")
+        print(f"  Accepted:   {data['accepted']}")
+        print(f"  Duplicates: {data['duplicates']}")
+        print(f"  Conflicted: {data['conflicted']}")
+        for d in data.get("details", []):
+            icons = {"accepted": "✓", "superseded_by": "→", "conflicted": "⚡", "error": "✗"}
+            print(f"  {icons.get(d['status'], '?')} {d['fqn']} [{d['status']}]")
+            if d.get("superseded_by"):
+                print(f"     superseded by: {d['superseded_by']}")
+            if d.get("conflict_id"):
+                print(f"     conflict #{d['conflict_id']}")
         return
-    status = result.get("status", "?")
-    version = result.get("version", "?")
-    print(f"Central KB server: {status} v{version}")
 
-
-def cmd_submit(args):
-    proj = args.project or project_name()
-    if not proj:
-        print("ERROR: --project or CENTRAL_KB_PROJECT required", file=sys.stderr)
-        sys.exit(1)
-
-    # Determine KB directory
-    kb_dir = Path(args.dir) if args.dir else Path.cwd() / "knowledgebase"
-    if not kb_dir.is_dir():
-        # Try parent (common when running from project root with knowledgebase/ as sibling)
-        alt = Path.cwd() / "project" / "knowledgebase"
-        if alt.is_dir():
-            kb_dir = alt
-        else:
-            print(f"ERROR: No knowledgebase/ directory found at {kb_dir}", file=sys.stderr)
-            sys.exit(1)
-
-    entries = load_kb_entries(kb_dir)
-    if not entries:
-        print("No YAML entries found in knowledgebase/", file=sys.stderr)
-        sys.exit(1)
-
-    # Check embedding source — skip Ollama model check if sidecar is available
-    model = embed_model()
-    embed_http_url = _detect_embed_http_url()
-    if embed_http_url:
-        print(f"Using embed-server HTTP sidecar ({embed_http_url}) for embeddings")
     else:
-        print(f"embed-server sidecar not reachable, falling back to Ollama ({model})")
-        check_ollama_model(model)
-    dim = None
+        # Auto-detect: try OKF directory first, then legacy SQLite
+        okf_candidates = [
+            Path("/project/knowledgebase"),
+            Path("knowledgebase"),
+        ]
+        for c in okf_candidates:
+            if c.is_dir() and list(c.rglob("*.md")):
+                args.okf_dir = str(c)
+                print(f"Auto-detected OKF directory: {c}")
+                cmd_submit(args)
+                return
 
-    source = embed_http_url or f"ollama:{model}"
-    print(f"Generating embeddings via {source} for {len(entries)} entries...")
-    for i, entry in enumerate(entries):
-        embed_text = f"{entry['title']}\n{entry['content'][:512]}"
-        vec = get_embedding(embed_text)
-        entry["vector"] = vec
-        # Compute simhash to prevent server-side OverflowError
-        entry["simhash"] = simhash_64(f"{entry['title']}\n{entry['content']}")
-        if dim is None:
-            dim = len(vec)
-        print(f"  [{i+1}/{len(entries)}] {entry['namespace']}:{entry['key'][:48]}  (dim={len(vec)})")
+        # Fall back to legacy auto-detect
+        db_candidates = [
+            "/project/.agent/agentdb.sqlite3",
+            ".claude/agentdb.sqlite3",
+            "agentdb.sqlite3",
+        ]
+        for c in db_candidates:
+            if os.path.exists(c):
+                args.local_db = c
+                print(f"Auto-detected local DB: {c}")
+                cmd_submit(args)
+                return
 
-    # Submit in batches of 5 to avoid large payloads
-    batch_size = 5
-    total_accepted = 0
-    total_dup = 0
-    total_conflict = 0
-    total_error = 0
-
-    for start in range(0, len(entries), batch_size):
-        batch = entries[start : start + batch_size]
-        payload = {
-            "project": proj,
-            "source": f"local:{kb_dir.name}",
-            "entries": batch,
-        }
-        result = api("/submit", method="POST", body=payload, timeout=60)
-        if not result:
-            # api() returned empty (server error) — count entire batch as errors
-            total_error += len(batch)
-            for entry in batch:
-                print(f"  ❌ {entry['namespace']}:{entry['key'][:48]}  server error")
-            continue
-        total_accepted += result.get("accepted", 0)
-        total_dup += result.get("duplicates", 0)
-        total_conflict += result.get("conflicted", 0)
-        for detail in result.get("details", []):
-            if detail.get("status") not in ("accepted", "duplicate"):
-                total_error += 1
-                print(f"  ⚠️  {detail.get('fqn', '?')}: {detail.get('status', '?')}")
-
-    print(f"\n✅ Submitted {len(entries)} entries → {total_accepted} accepted, {total_dup} duplicates, {total_conflict} conflicts, {total_error} errors")
-
-
-def cmd_pull(args):
-    proj = args.project or project_name()
-    if not proj:
-        print("ERROR: --project or CENTRAL_KB_PROJECT required", file=sys.stderr)
+        print("Error: No knowledge source found. Use --okf-dir or --local-db.", file=sys.stderr)
         sys.exit(1)
 
-    params = f"?project={proj}"
-    if args.after_version:
-        params += f"&after_version={args.after_version}"
-    if args.scope:
-        params += f"&scope={args.scope}"
+    # Submit OKF entries
+    payload = {
+        "project": project,
+        "source": source,
+        "okf_entries": okf_entries,
+    }
+    resp = httpx.post(f"{url}/submit", json=payload, timeout=120.0)
+    resp.raise_for_status()
+    data = resp.json()
 
-    result = api(f"/pull{params}")
-    if result is None:
-        return
-    entries = result.get("entries", [])
-    drift_warnings = result.get("drift_warnings", [])
-
-    if args.json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        print(f"Pulled {len(entries)} entries from project '{proj}'")
-        for e in entries:
-            print(f"  {e.get('fqn', '?')}  v{e.get('version', '?')}  [{e.get('namespace', '?')}] {e.get('title', '?')[:60]}")
-        if drift_warnings:
-            print(f"\n⚠️  {len(drift_warnings)} drift warnings:")
-            for w in drift_warnings:
-                print(f"  Your: {w.get('your_entry', '?')} → {w.get('your_conclusion', '?')[:50]}")
-                print(f"  Other: {w.get('other_entry', '?')} → {w.get('other_conclusion', '?')[:50]}")
-
-
-def cmd_search(args):
-    # Default scope: --scope flag > CENTRAL_KB_PROJECT env var
-    # (set by bootstrap.sh --project <name> when launching the container)
-    scope = args.scope or project_name()
-    params = f"?q={urllib.request.quote(args.query)}"
-    if scope:
-        params += f"&scope={scope}"
-    if args.namespace:
-        params += f"&namespace={args.namespace}"
-    if args.alpha is not None:
-        params += f"&alpha={args.alpha}"
-    if args.limit:
-        params += f"&limit={args.limit}"
-
-    result = api(f"/search{params}")
-    if result is None:
-        return
-
-    if args.json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        results = result.get("results", [])
-        scope_label = f" [scope={scope}]" if scope else ""
-        print(f"Search: \"{args.query}\"{scope_label}  ({len(results)} results)")
-        for r in results:
-            score = r.get("score", 0)
-            cos = r.get("cosine_score", 0)
-            fts = r.get("fts_score", 0)
-            title = r.get("title", "")[:60] or "(no title)"
-            print(f"  {r.get('fqn', '?'):55s}  score={score:.3f} (cos={cos:.3f} fts={fts:.3f})  {title}")
+    print(f"\nSubmit to {project}:")
+    print(f"  Accepted:   {data['accepted']}")
+    print(f"  Duplicates: {data['duplicates']}")
+    print(f"  Conflicted: {data['conflicted']}")
+    for d in data.get("details", []):
+        icons = {"accepted": "✓", "auto_merged": "→", "superseded_by": "→",
+                 "conflicted": "⚡", "error": "✗"}
+        print(f"  {icons.get(d['status'], '?')} {d['fqn']} [{d['status']}]")
+        if d.get("superseded_by"):
+            print(f"     superseded by: {d['superseded_by']}")
+        if d.get("conflict_id"):
+            print(f"     conflict #{d['conflict_id']}")
 
 
-def cmd_drift(args):
-    proj = args.project or project_name()
-    if not proj:
-        print("ERROR: --project or CENTRAL_KB_PROJECT required", file=sys.stderr)
+def cmd_pull(args: argparse.Namespace):
+    project = args.project or os.environ.get(CENTRAL_KB_PROJECT_ENV, "unknown")
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
         sys.exit(1)
 
-    result = api(f"/drift?project={proj}")
-    if result is None:
-        return
-    items = result.get("drift_items", [])
-    if items:
-        print(f"⚠️  {len(items)} drift items detected:")
-        for item in items:
-            print(f"  {item}")
+    scopes = ["own"]
+    if args.global_scope:
+        scopes.append("global")
+    scope_str = ",".join(scopes)
+
+    params = {
+        "project": project,
+        "after_version": args.after_version,
+        "scope": scope_str,
+    }
+
+    resp = httpx.get(f"{url}/pull", params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    entries = data.get("entries", [])
+    print(f"Pulled {len(entries)} entries from {project}:")
+    for e in entries:
+        tag = "[GLOBAL] " if e.get("scope") == "global" else ""
+        print(f"  {tag}{e['fqn']} v{e['version']} — {e['title']}")
+
+    drift = data.get("drift_warnings", [])
+    if drift:
+        print(f"\n⚠  DRIFT DETECTED ({len(drift)} items):")
+        for d in drift:
+            print(f"  Topic: {d.get('your_entry', '?')}")
+            print(f"    You: {d.get('your_conclusion', '?')}")
+            print(f"    vs:  {d.get('other_conclusion', '?')}")
+
+    print(f"\nNext cursor: {data.get('next_cursor', '?')}")
+
+
+def cmd_search(args: argparse.Namespace):
+    query = " ".join(args.query)
+    scope = args.scope or os.environ.get(CENTRAL_KB_PROJECT_ENV)
+    namespace = args.namespace
+
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if url:
+        params = {"q": query, "limit": args.limit}
+        if scope:
+            params["scope"] = scope
+        if namespace:
+            params["namespace"] = namespace
+
+        resp = httpx.get(f"{url}/search", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+
+        print(f'Search: "{query}"')
+        results = data.get("results", [])
+        if not results:
+            print("  No results.")
+            return
+
+        print(f"  Results: {len(results)} items:\n")
+        for i, r in enumerate(results):
+            okf_type = r.get("okf_type") or r.get("namespace", "?")
+            okf_tags = r.get("okf_tags") or []
+            tag_str = f" [{', '.join(okf_tags[:3])}]" if okf_tags else ""
+            print(f"  {i + 1}. [{okf_type}]{tag_str} {r['title']}  (score: {r['score']:.4f})")
+            print(f"     {r['fqn']}")
+            if r.get("okf_description"):
+                print(f"     {r['okf_description'][:120]}")
+            else:
+                print(f"     {r['content'][:120]}...")
+            print()
     else:
-        print(f"✅ No drift detected for project '{proj}'")
+        script = os.path.join(os.path.dirname(__file__), "..", "..",
+                              "scripts", "search-kb-memory.py")
+        cmd = [sys.executable, script] + list(args.query)
+        if namespace:
+            cmd.extend(["-n", namespace])
+        if args.limit:
+            cmd.extend(["-l", str(args.limit)])
+        subprocess.run(cmd)
 
 
-def cmd_lint(args):
-    """Run memory lint — detect orphans, stale entries, contradictions."""
-    proj = args.project or project_name()
-    if not proj:
-        print("ERROR: --project or CENTRAL_KB_PROJECT required", file=sys.stderr)
+def cmd_convert(args: argparse.Namespace):
+    """Convert existing knowledgebase entries to OKF format."""
+    from app.okf import make_iso8601_timestamp
+
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
+
+    if not input_dir.is_dir():
+        print(f"Error: Input directory not found: {input_dir}", file=sys.stderr)
         sys.exit(1)
 
-    body = {"project": proj, "with_llm": args.llm, "stale_days": args.stale_days}
-    if args.llm and args.model:
-        body["llm_model"] = args.model
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    result = api("/lint", method="POST", body=body)
-    if result is None:
-        return
+    converted = 0
+    errors = 0
 
-    findings = result.get("findings", [])
-    print(f"Lint results for project '{proj}':")
-    print(f"  {result.get('summary', '')}")
-    print()
-
-    if not findings:
-        print("  ✅ No issues found.")
-        return
-
-    for f in findings:
-        icon = {"error": "❌", "warning": "⚠️ ", "info": "ℹ️ "}.get(f.get("severity", "info"), "•")
-        print(f"  {icon} [{f.get('category', '?')}] {f.get('message', '')}")
-        if f.get("entry_key"):
-            print(f"     Entry: {f['entry_key']}")
-        if f.get("details"):
-            for k, v in f["details"].items():
-                print(f"     {k}: {v}")
-        print()
-
-
-def cmd_candidates(_args):
-    result = api("/candidates")
-    if result is None:
-        return
-    cands = result.get("candidates", [])
-    if not cands:
-        print("No promotion candidates")
-    else:
-        print(f"{len(cands)} promotion candidates:")
-        for c in cands:
-            print(f"  #{c['id']}  {c['candidate_fqn']}  sim={c.get('avg_similarity', 0):.3f}  projects={c.get('project_count', 0)}  [{c.get('status', '?')}]")
-
-
-
-def _detect_chat_model():
-    """Auto-detect an available Ollama chat model."""
-    # Priority: user-configured models first, then common small chat models
-    preferred = ["qwen2.5:0.5b", "qwen2.5:1.5b", "gemma3:4b", "llama3.2:1b", "phi3:mini"]
-    try:
-        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-        resp = urllib.request.urlopen(req, timeout=5)
-        data = json.loads(resp.read())
-        available = [m.get("name", "").split(":")[0] for m in data.get("models", [])]
-        for candidate in preferred:
-            if any(candidate.split(":")[0] == a for a in available):
-                # Return the exact name from available models
-                for m in data.get("models", []):
-                    if m.get("name", "").split(":")[0] == candidate.split(":")[0]:
-                        return m["name"]
-    except Exception:
-        pass
-    return None
-
-
-def cmd_explain(args):
-    """Search the KB and synthesize a narrative explanation."""
-    proj = args.project or project_name()
-    if not proj:
-        print("ERROR: --project or CENTRAL_KB_PROJECT required", file=sys.stderr)
-        sys.exit(1)
-
-    # 1. Search
-    params = f"?q={urllib.request.quote(args.query)}"
-    if proj:
-        params += f"&scope={proj}"
-    if args.namespace:
-        params += f"&namespace={args.namespace}"
-    limit = args.limit or (5 if args.llm else 10)
-    params += f"&limit={limit}"
-
-    result = api(f"/search{params}")
-    if result is None:
-        return
-    results = result.get("results", [])
-    if not results:
-        print(f'No results for "{args.query}"')
-        return
-
-    # 2. Build context from results
-    context_parts = []
-    for i, r in enumerate(results, 1):
-        title = r.get("title", "(no title)")
-        fqn = r.get("fqn", "?")
-        score = r.get("score", 0)
-        cos = r.get("cosine_score", 0)
-        fts = r.get("fts_score", 0)
-        content = r.get("content", "")
-        entry_text = (
-            "--- Entry " + str(i) + ": " + fqn + " ---" + chr(10) +
-            "Title: " + title + chr(10) +
-            "Relevance: score=" + f"{score:.3f}" + " (cosine=" + f"{cos:.3f}" + " fts=" + f"{fts:.3f}" + ")" + chr(10) +
-            "Content:" + chr(10) + content
-        )
-        context_parts.append(entry_text)
-    context = (chr(10) + chr(10)).join(context_parts)
-
-    # 3. Generate explanation
-    model = args.model or os.environ.get("KB_LLM_MODEL", "") or _detect_chat_model()
-
-    if args.llm:
-        system_prompt = (
-            "You are a knowledge management assistant. Given search results from a "
-            "team knowledge base, produce a clear, structured narrative that explains "
-            "how the entries relate to each other, trace their evolution over time, "
-            "and connect them to the project context. Focus on causal chains, "
-            "superseding decisions, and practical implications. Use specific entry IDs "
-            "and dates. Avoid generic summaries. Explain why and what changed."
-        )
-        user_prompt = (
-            "Explain the topic "" + args.query + "" in the context of this project knowledge base. " +
-            "Here are the search results:" + chr(10) + chr(10) + context
-        )
-        payload = json.dumps({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            "http://localhost:11434/api/chat",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
+    # Walk through input directory
+    for yaml_file in sorted(input_dir.rglob("*.yaml")):
+        rel_path = yaml_file.relative_to(input_dir)
         try:
-            resp = urllib.request.urlopen(req, timeout=120)
-            llm_result = json.loads(resp.read())
-            explanation = llm_result.get("message", {}).get("content", "")
-            if not explanation:
-                explanation = llm_result.get("response", "(no response)")
-            print(explanation)
-        except urllib.error.URLError as e:
-            print(f"LLM error: {e.reason}", file=sys.stderr)
-            print(f"Falling back to structured output. Try: ollama pull qwen2.5:0.5b", file=sys.stderr)
-            _print_structured_explain(args.query, results)
+            content = yaml_file.read_text()
+            parsed = _parse_yaml_kb_entry(content)
+            if parsed is None:
+                print(f"  ⚠  Skipping {rel_path}: could not parse")
+                errors += 1
+                continue
+
+            # Determine output path
+            namespace = parsed.get("namespace", "concepts")
+            key = parsed.get("key") or _make_key_from_title(parsed.get("title", "untitled"))
+            out_subdir = output_dir / namespace
+            out_subdir.mkdir(parents=True, exist_ok=True)
+            out_path = out_subdir / f"{key}.md"
+
+            # Build OKF markdown
+            okf_content = _build_okf_markdown(parsed)
+            out_path.write_text(okf_content)
+
+            print(f"  ✓ {rel_path} → {out_path.relative_to(output_dir)}")
+            converted += 1
+
+        except Exception as e:
+            print(f"  ✗ {rel_path}: {e}", file=sys.stderr)
+            errors += 1
+
+    # Generate index.md files
+    _generate_index_files(output_dir)
+
+    print(f"\nConverted: {converted}, Errors: {errors}")
+    print(f"Output: {output_dir}")
+
+
+def _parse_yaml_kb_entry(content: str) -> Optional[dict]:
+    """Parse a legacy YAML knowledgebase entry."""
+    # Try to extract YAML frontmatter (between --- markers)
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", content, re.DOTALL)
+    if fm_match:
+        fm_raw = fm_match.group(1)
+        body = fm_match.group(2).strip()
     else:
-        _print_structured_explain(args.query, results)
+        # No frontmatter — treat entire content as body
+        fm_raw = content
+        body = ""
+
+    try:
+        fm = yaml.safe_load(fm_raw)
+    except yaml.YAMLError:
+        return None
+
+    if not isinstance(fm, dict):
+        return None
+
+    return {
+        "frontmatter": fm,
+        "body": body,
+    }
 
 
-def _print_structured_explain(query, results):
-    """Print search results in a structured explain format without LLM."""
-    print()
-    print(f"=== Explain: \"{query}\" ({len(results)} entries) ===")
-    print()
-    for i, r in enumerate(results, 1):
-        title = r.get("title", "(no title)")
-        fqn = r.get("fqn", "?")
-        score = r.get("score", 0)
-        cos = r.get("cosine_score", 0)
-        fts = r.get("fts_score", 0)
-        content = r.get("content", "")
-        preview_lines = [l.strip() for l in content.split("\n") if l.strip() and not l.startswith("id:")][:3]
-        preview = " | ".join(preview_lines) if preview_lines else title
-        print(f"{i}. {fqn}")
-        print(f"   Title: {title}")
-        print(f"   Score: {score:.3f} (cosine={cos:.3f}, fts={fts:.3f})")
-        print(f"   Key:   {preview[:120]}")
-        print()
-    print("Tip: Use --llm to get a synthesized narrative explanation.")
+def _build_okf_markdown(parsed: dict) -> str:
+    """Build OKF markdown from parsed legacy entry."""
+    fm = parsed.get("frontmatter", {})
+    body = parsed.get("body", "")
+
+    # Map fields
+    okf_type = _map_legacy_type(fm)
+    title = fm.get("title", fm.get("name", fm.get("id", "Untitled")))
+    description = fm.get("description", fm.get("summary", fm.get("decision", "")))
+    resource = fm.get("resource", fm.get("source", ""))
+    tags = fm.get("topics", fm.get("tags", []))
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+
+    timestamp = fm.get("timestamp", fm.get("date", fm.get("created_at", "")))
+    if timestamp and not _is_iso8601(timestamp):
+        # Try to convert common date formats
+        timestamp = _convert_to_iso8601(timestamp)
+
+    # Build body from remaining fields
+    body_parts = []
+    if body:
+        body_parts.append(body)
+
+    # Add conventional sections for known fields
+    for section_name in ["context", "consequences", "implementation", "rationale", "alternatives"]:
+        val = fm.get(section_name)
+        if val:
+            section_title = section_name.capitalize()
+            body_parts.append(f"\n# {section_title}\n\n{val}")
+
+    body_text = "\n".join(body_parts).strip()
+
+    # Build frontmatter
+    lines = ["---"]
+    lines.append(f"type: {okf_type}")
+    lines.append(f"title: {title}")
+    if description:
+        lines.append(f"description: {description}")
+    if resource:
+        lines.append(f"resource: {resource}")
+    if tags:
+        lines.append(f"tags: [{', '.join(tags)}]")
+    if timestamp:
+        lines.append(f"timestamp: {timestamp}")
+
+    # Preserve extra fields
+    standard_keys = {"type", "title", "description", "resource", "tags", "timestamp",
+                     "topics", "date", "name", "id", "summary", "decision", "source",
+                     "context", "consequences", "implementation", "rationale", "alternatives",
+                     "created_at", "status", "category"}
+    for k, v in fm.items():
+        if k not in standard_keys and v is not None:
+            if isinstance(v, str) and "\n" in v:
+                lines.append(f"{k}: |")
+                for line in v.split("\n"):
+                    lines.append(f"  {line}")
+            else:
+                lines.append(f"{k}: {v}")
+
+    lines.append("---")
+
+    if body_text:
+        lines.append("")
+        lines.append(body_text)
+
+    return "\n".join(lines)
 
 
-def cmd_conflicts(args):
-    if args.conflict_id and args.resolve:
-        # Resolve a conflict
-        body = {"resolution": args.resolve}
-        result = api(f"/conflicts/{args.conflict_id}/resolve", method="POST", body=body)
-        if result is None:
-            return
-        print(f"Conflict {args.conflict_id} resolved: {args.resolve}")
+def _map_legacy_type(fm: dict) -> str:
+    """Map legacy category/type to OKF type."""
+    category = fm.get("category", "").lower()
+    type_val = fm.get("type", "").lower()
+
+    if type_val:
+        return type_val.capitalize()
+    elif "decision" in category or "arch" in category:
+        return "Decision"
+    elif "pattern" in category:
+        return "Pattern"
+    elif "session" in category:
+        return "Session"
+    elif "metric" in category:
+        return "Metric"
+    elif "runbook" in category or "playbook" in category:
+        return "Runbook"
+    elif "table" in category or "dataset" in category:
+        return "Table"
     else:
-        # List conflicts
-        result = api("/conflicts")
-        if result is None:
-            return
-        conflicts = result.get("conflicts", [])
-        if not conflicts:
-            print("No conflicts")
-        else:
-            print(f"{len(conflicts)} conflicts:")
-            for c in conflicts:
-                print(f"  #{c['id']}  existing={c['existing_fqn']}  proposed={c['proposed_fqn']}  sim={c.get('similarity', 0):.3f}  [{c.get('status', '?')}]")
+        return "Concept"
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+def _is_iso8601(ts: str) -> bool:
+    """Check if a timestamp is already ISO 8601."""
+    patterns = [
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})$",
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
+        r"^\d{4}-\d{2}-\d{2}$",
+    ]
+    return any(re.match(p, ts) for p in patterns)
+
+
+def _convert_to_iso8601(date_str: str) -> str:
+    """Convert common date formats to ISO 8601."""
+    # Try YYYY-MM-DD
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", date_str)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}T00:00:00Z"
+    # Try MM/DD/YYYY
+    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})", date_str)
+    if m:
+        return f"{m.group(3)}-{m.group(1)}-{m.group(2)}T00:00:00Z"
+    return date_str
+
+
+def _generate_index_files(output_dir: Path):
+    """Generate index.md files for each subdirectory."""
+    for subdir in sorted(output_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        md_files = sorted(subdir.glob("*.md"))
+        concept_files = [f for f in md_files if f.name not in ("index.md", "log.md")]
+        if not concept_files:
+            continue
+
+        index_path = subdir / "index.md"
+        lines = [f"# {subdir.name.capitalize()}", ""]
+        for cf in concept_files:
+            try:
+                content = cf.read_text()
+                fm_match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+                if fm_match:
+                    fm = yaml.safe_load(fm_match.group(1)) or {}
+                    title = fm.get("title", cf.stem)
+                    desc = fm.get("description", "")
+                    lines.append(f"* [{title}]({cf.name}) - {desc}" if desc else f"* [{title}]({cf.name})")
+                else:
+                    lines.append(f"* [{cf.stem}]({cf.name})")
+            except Exception:
+                lines.append(f"* [{cf.stem}]({cf.name})")
+
+        index_path.write_text("\n".join(lines) + "\n")
+        print(f"  📋 Generated {index_path.relative_to(output_dir)}")
+
+
+def cmd_drift(args: argparse.Namespace):
+    project = args.project or os.environ.get(CENTRAL_KB_PROJECT_ENV, "unknown")
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
+        sys.exit(1)
+
+    resp = httpx.get(f"{url}/drift", params={"project": project})
+    resp.raise_for_status()
+    data = resp.json()
+
+    items = data.get("drift_items", [])
+    if not items:
+        print(f"No drift detected for {project}.")
+        return
+
+    print(f"Drift report for {project}:")
+    for d in items:
+        print(f"\n  ⚠  Topic similarity: {d.get('topic_similarity', 0):.2f}")
+        your = d.get("your_entry", {})
+        other = d.get("conflicting_entry", {})
+        print(f"     You: {your.get('fqn', '?')} — {your.get('title', '?')}")
+        print(f"     vs:  {other.get('fqn', '?')} — {other.get('title', '?')}")
+
+
+def cmd_candidates(args: argparse.Namespace):
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
+        sys.exit(1)
+
+    resp = httpx.get(f"{url}/candidates")
+    resp.raise_for_status()
+    data = resp.json()
+
+    candidates = data.get("candidates", [])
+    if not candidates:
+        print("No promotion candidates.")
+        return
+
+    print(f"Promotion candidates ({len(candidates)}):")
+    for c in candidates:
+        print(f"  #{c['id']} — {c['candidate_fqn']}")
+        print(f"     Matches: {c['project_count']} projects, avg similarity: {c['avg_similarity']:.2f}")
+        print(f"     Status: {c['status']}")
+
+
+def cmd_promote(args: argparse.Namespace):
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
+        sys.exit(1)
+
+    payload = {
+        "candidate_id": args.candidate_id,
+        "action": args.action,
+        "verdict_by": os.environ.get("USER", "unknown"),
+    }
+    resp = httpx.post(f"{url}/promote", json=payload)
+    resp.raise_for_status()
+    print(f"Candidate #{args.candidate_id}: {args.action}d.")
+
+
+def cmd_conflicts(args: argparse.Namespace):
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
+        sys.exit(1)
+
+    resp = httpx.get(f"{url}/conflicts")
+    resp.raise_for_status()
+    data = resp.json()
+
+    conflicts = data.get("conflicts", [])
+    if not conflicts:
+        print("No pending conflicts.")
+        return
+
+    print(f"Pending conflicts ({len(conflicts)}):")
+    for c in conflicts:
+        print(f"  #{c['id']}: {c['existing_fqn']} ← {c['proposed_fqn']}")
+        print(f"     Proposed: {c.get('proposed_content', '')[:80]}...")
+
+
+def cmd_resolve(args: argparse.Namespace):
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
+        sys.exit(1)
+
+    payload = {"resolution": args.resolution}
+    resp = httpx.post(f"{url}/conflicts/{args.conflict_id}/resolve", json=payload)
+    resp.raise_for_status()
+    print(f"Conflict #{args.conflict_id}: resolved ({args.resolution}).")
+
+
+def cmd_validate(args: argparse.Namespace):
+    """Validate OKF compliance of a bundle directory."""
+    from app.okf import validate_okf_bundle
+
+    bundle_path = Path(args.bundle_dir)
+    if not bundle_path.is_dir():
+        print(f"Error: Bundle directory not found: {bundle_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Validating OKF bundle: {bundle_path}")
+    errors = validate_okf_bundle(str(bundle_path))
+
+    if not errors:
+        print("✅ Bundle is OKF v0.1 conformant!")
+        return
+
+    print(f"\nFound {len(errors)} validation error(s):")
+    for e in errors:
+        field = f" ({e.field})" if e.field else ""
+        print(f"  ✗ {e}{field}")
+
+
+def cmd_health(args: argparse.Namespace):
+    """Check Central KB server health."""
+    url = build_central_url(os.environ.get(CENTRAL_KB_URL_ENV))
+    if not url:
+        print("Error: CENTRAL_KB_URL not set.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        resp = httpx.get(f"{url}/health", timeout=5.0)
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"Central KB: {data.get('status', 'unknown')}")
+        print(f"  Version: {data.get('version', '?')}")
+    except Exception as e:
+        print(f"Error: Cannot reach Central KB at {url}: {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="kb",
-        description="Central Knowledge Base CLI — submit, pull, search, and manage KB entries",
+        description="Central KB — cross-project knowledge base CLI (OKF v0.1)"
     )
-    parser.add_argument("--url", default=None, help="Server URL (default: CENTRAL_KB_URL env)")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--central-url", help="Override CENTRAL_KB_URL")
+    sub = parser.add_subparsers(dest="command")
 
-    # health
-    p = sub.add_parser("health", help="Check server health")
+    p_submit = sub.add_parser("submit", help="Submit local KB to central server")
+    p_submit.add_argument("--project", "-p", help="Project namespace")
+    p_submit.add_argument("--source", "-s", default="local:cli")
+    p_submit.add_argument("--local-db",
+                          help="Path to local KB SQLite database (legacy)")
+    p_submit.add_argument("--okf-dir",
+                          help="Path to OKF markdown directory (default: auto-detect)")
+    p_submit.set_defaults(func=cmd_submit)
 
-    # submit
-    p = sub.add_parser("submit", help="Submit local KB YAML entries to server")
-    p.add_argument("--project", "-p", default=None, help="Project name (or set CENTRAL_KB_PROJECT)")
-    p.add_argument("--dir", default=None, help="Knowledge base directory (default: ./knowledgebase)")
+    p_pull = sub.add_parser("pull", help="Pull entries from central KB")
+    p_pull.add_argument("--project", "-p", help="Project namespace")
+    p_pull.add_argument("--after-version", type=int, default=0)
+    p_pull.add_argument("--global", dest="global_scope", action="store_true",
+                        help="Include global namespace")
+    p_pull.set_defaults(func=cmd_pull)
 
-    # pull
-    p = sub.add_parser("pull", help="Pull entries from server")
-    p.add_argument("--project", "-p", default=None, help="Project name")
-    p.add_argument("--scope", "-s", default=None, help="Filter by scope")
-    p.add_argument("--after-version", type=int, default=None, help="Pull entries after this version")
-    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
+    p_search = sub.add_parser("search", help="Search across namespaces")
+    p_search.add_argument("query", nargs="+")
+    p_search.add_argument("--scope", "-s", help="Scope filter (project name)")
+    p_search.add_argument("--namespace", "-n", help="Namespace filter")
+    p_search.add_argument("--limit", "-l", type=int, default=10)
+    p_search.set_defaults(func=cmd_search)
 
-    # search
-    p = sub.add_parser("search", help="Search entries (semantic + full-text)")
-    p.add_argument("query", help="Search query")
-    p.add_argument("--scope", "-s", default=None, help="Filter by scope/project")
-    p.add_argument("--namespace", "-n", default=None, help="Filter by namespace")
-    p.add_argument("--alpha", type=float, default=None, help="Hybrid search weight (0=FTS, 1=vector)")
-    p.add_argument("--limit", "-l", type=int, default=None, help="Max results")
-    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
+    p_convert = sub.add_parser("convert", help="Convert legacy KB entries to OKF format")
+    p_convert.add_argument("input_dir", help="Input directory with legacy YAML files")
+    p_convert.add_argument("output_dir", help="Output directory for OKF markdown files")
+    p_convert.set_defaults(func=cmd_convert)
 
-    # drift
-    p = sub.add_parser("drift", help="Check for conceptual drift")
-    p.add_argument("--project", "-p", default=None, help="Project name")
+    p_validate = sub.add_parser("validate", help="Validate OKF bundle compliance")
+    p_validate.add_argument("bundle_dir", help="OKF bundle directory to validate")
+    p_validate.set_defaults(func=cmd_validate)
 
-    # lint
-    p = sub.add_parser("lint", help="Run memory lint (orphans, stale entries, contradictions)")
-    p.add_argument("--project", "-p", default=None, help="Project name (or set CENTRAL_KB_PROJECT)")
-    p.add_argument("--llm", action="store_true", help="Enable LLM-driven contradiction detection")
-    p.add_argument("--model", "-m", default=None, help="Ollama model for --llm (default: auto-detect)")
-    p.add_argument("--stale-days", type=int, default=90, help="Staleness threshold in days (default: 90)")
+    p_health = sub.add_parser("health", help="Check Central KB server health")
+    p_health.set_defaults(func=cmd_health)
 
-    # candidates
-    p = sub.add_parser("candidates", help="List promotion candidates")
+    p_drift = sub.add_parser("drift", help="Show drift report")
+    p_drift.add_argument("--project", "-p", help="Project namespace")
+    p_drift.set_defaults(func=cmd_drift)
 
-    # explain
-    p = sub.add_parser("explain", help="Search KB and explain how entries relate (use --llm for narrative)")
-    p.add_argument("query", help="Topic to explain")
-    p.add_argument("--project", "-p", default=None, help="Project name")
-    p.add_argument("--scope", "-s", default=None, help="Filter by scope/project")
-    p.add_argument("--namespace", "-n", default=None, help="Filter by namespace")
-    p.add_argument("--limit", "-l", type=int, default=None, help="Max results (default 10)")
-    p.add_argument("--llm", action="store_true", help="Use Ollama LLM to synthesize narrative explanation")
-    p.add_argument("--model", "-m", default=None, help="Ollama model for --llm (default: auto-detect)")
+    p_candidates = sub.add_parser("candidates", help="List promotion candidates")
+    p_candidates.set_defaults(func=cmd_candidates)
 
-    # conflicts
-    p = sub.add_parser("conflicts", help="List or resolve conflicts")
-    p.add_argument("conflict_id", type=int, nargs="?", default=None, help="Conflict ID to resolve")
-    p.add_argument("--resolve", "-r", default=None, help="Resolution text (triggers resolve action)")
+    p_promote = sub.add_parser("promote", help="Approve/reject promotion candidate")
+    p_promote.add_argument("candidate_id", type=int)
+    p_promote.add_argument("action", choices=["approve", "reject"])
+    p_promote.set_defaults(func=cmd_promote)
+
+    p_conflicts = sub.add_parser("conflicts", help="List pending conflicts")
+    p_conflicts.set_defaults(func=cmd_conflicts)
+
+    p_resolve = sub.add_parser("resolve", help="Resolve a conflict")
+    p_resolve.add_argument("conflict_id", type=int)
+    p_resolve.add_argument("resolution", choices=["keep_existing", "accept_proposed", "merge_manual"])
+    p_resolve.set_defaults(func=cmd_resolve)
 
     args = parser.parse_args()
 
-    # Override URL if flag given
-    if args.url:
-        os.environ["CENTRAL_KB_URL"] = args.url
+    if args.central_url:
+        os.environ[CENTRAL_KB_URL_ENV] = args.central_url
 
-    commands = {
-        "health": cmd_health,
-        "submit": cmd_submit,
-        "pull": cmd_pull,
-        "search": cmd_search,
-        "drift": cmd_drift,
-        "lint": cmd_lint,
-        "candidates": cmd_candidates,
-        "explain": cmd_explain,
-        "conflicts": cmd_conflicts,
-    }
-    commands[args.command](args)
+    if not hasattr(args, "func"):
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
 
 
 if __name__ == "__main__":

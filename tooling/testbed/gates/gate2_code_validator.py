@@ -72,6 +72,11 @@ ERROR_CODES = {
     "G2_NETWORK_UNDECLARED": "Network in compose not declared in spec",
     # Test suite presence
     "G2_MISSING_TEST_SUITE": "Test suite path declared in spec not found on disk",
+    # Callflow contract consistency
+    "G2_CALLFLOW_UNKNOWN_SERVICE": "Callflow edge references a service not in the spec",
+    "G2_CALLFLOW_BAD_REQUEST": "Callflow edge request does not fit its protocol",
+    "G2_CALLFLOW_MISSING_HOOK": "Callflow verify-hook file not found in workspace",
+    "G2_CALLFLOW_DUPLICATE_ID": "Callflow edge ids are not unique",
     # Static hygiene
     "G2_CONFIG_SYNTAX": "Config file has syntax or parse error",
     "G2_ENVOY_CONFIG_SYNTAX": "Envoy config has YAML parse error",
@@ -809,6 +814,18 @@ def _check_depends_on(
 # Check 2: Required files exist
 # ---------------------------------------------------------------------------
 
+def _is_e2e_suite(ts) -> bool:
+    """A test suite is E2E if its name is 'e2e' or its tags/markers mark it live.
+
+    E2E suites belong to Gate 4, not Gate 2. Gate 2 validates and runs only the
+    unit suites.
+    """
+    name = (ts.name or "").lower()
+    tags = {t.lower() for t in (ts.tags or [])}
+    markers = {m.lower() for m in (ts.markers or [])}
+    return name == "e2e" or bool(tags & {"e2e", "live"}) or bool(markers & {"live"})
+
+
 def _check_required_files(
     spec: TestbedSpec,
     workspace_root: Path,
@@ -820,8 +837,10 @@ def _check_required_files(
     # Compose file itself (already checked in _load_compose)
     # Build context Dockerfiles (checked in _check_build)
 
-    # Check test suite paths
+    # Check test suite paths (unit suites only; e2e belongs to Gate 4)
     for ts in spec.test_suites:
+        if _is_e2e_suite(ts):
+            continue
         test_path = workspace_root / ts.path.lstrip("/")
         if not test_path.exists():
             diagnostics.append(Diagnostic(
@@ -916,8 +935,10 @@ def _check_test_suite_presence(
     diagnostics: list[Diagnostic],
     actions: list[Action],
 ) -> None:
-    """Check that test suite paths exist on disk."""
+    """Check that unit test suite paths exist on disk."""
     for ts in spec.test_suites:
+        if _is_e2e_suite(ts):
+            continue
         test_path = workspace_root / ts.path.lstrip("/")
         if not test_path.exists():
             diagnostics.append(Diagnostic(
@@ -948,6 +969,101 @@ def _check_test_suite_presence(
                     target_field=f"test_suites.{ts.name}.path",
                     priority=3,
                 ))
+
+
+# ---------------------------------------------------------------------------
+# Check 4b: Callflow contracts (static)
+# ---------------------------------------------------------------------------
+
+def _check_callflow_contracts(
+    spec: TestbedSpec,
+    workspace_root: Path,
+    diagnostics: list[Diagnostic],
+    actions: list[Action],
+) -> None:
+    """Statically validate the declared callflow. Never executes a call.
+
+    Checks shape only: edge ids are unique, source/target reference declared
+    services, an http edge has method+path, and a verify_hook edge points at
+    an existing file. Protocol-specific execution is Gate 4's job.
+    """
+    edges = spec.callflow.edges
+    if not edges:
+        return
+
+    valid_names = {s.name for s in spec.services}
+
+    # Edge ids unique
+    seen: set[str] = set()
+    for edge in edges:
+        if edge.id in seen:
+            diagnostics.append(Diagnostic(
+                code="G2_CALLFLOW_DUPLICATE_ID",
+                severity=Severity.error,
+                message=f"Duplicate callflow edge id '{edge.id}'",
+                location=Location(field=f"callflow.edges.{edge.id}", source=str(workspace_root)),
+            ))
+        seen.add(edge.id)
+
+        # Source and target refer to declared services
+        for role in (edge.source, edge.target):
+            if role not in valid_names:
+                diagnostics.append(Diagnostic(
+                    code="G2_CALLFLOW_UNKNOWN_SERVICE",
+                    severity=Severity.error,
+                    message=f"Callflow edge '{edge.id}' references service '{role}' not in the spec",
+                    location=Location(field=f"callflow.edges.{edge.id}.{edge.source if role==edge.source else 'target'}", source=str(workspace_root)),
+                ))
+                actions.append(Action(
+                    kind=ActionKind.fix,
+                    description=f"Set callflow edge '{edge.id}' {edge.source if role==edge.source else 'target'} to a declared service",
+                    target_field=f"callflow.edges.{edge.id}",
+                    priority=1,
+                ))
+
+        # http edges must carry method + path
+        if edge.protocol == "http":
+            req = edge.request or {}
+            if not req.get("method"):
+                diagnostics.append(Diagnostic(
+                    code="G2_CALLFLOW_BAD_REQUEST",
+                    severity=Severity.error,
+                    message=f"Callflow edge '{edge.id}' (http) is missing request.method",
+                    location=Location(field=f"callflow.edges.{edge.id}.request", source=str(workspace_root)),
+                ))
+            if not req.get("path"):
+                diagnostics.append(Diagnostic(
+                    code="G2_CALLFLOW_BAD_REQUEST",
+                    severity=Severity.error,
+                    message=f"Callflow edge '{edge.id}' (http) is missing request.path",
+                    location=Location(field=f"callflow.edges.{edge.id}.request", source=str(workspace_root)),
+                ))
+
+        # verify_hook edges must point at an existing file
+        if edge.expect.mode.value == "verify_hook" or edge.protocol == "verify-hook":
+            hook = edge.expect.verify_hook
+            if not hook:
+                diagnostics.append(Diagnostic(
+                    code="G2_CALLFLOW_MISSING_HOOK",
+                    severity=Severity.error,
+                    message=f"Callflow edge '{edge.id}' uses verify_hook but has no expect.verify_hook path",
+                    location=Location(field=f"callflow.edges.{edge.id}.expect", source=str(workspace_root)),
+                ))
+            else:
+                hook_path = (workspace_root / hook.lstrip("/"))
+                if not hook_path.exists():
+                    diagnostics.append(Diagnostic(
+                        code="G2_CALLFLOW_MISSING_HOOK",
+                        severity=Severity.error,
+                        message=f"Callflow edge '{edge.id}' verify_hook file not found: {hook_path}",
+                        location=Location(field=f"callflow.edges.{edge.id}.expect.verify_hook", source=str(workspace_root)),
+                    ))
+                    actions.append(Action(
+                        kind=ActionKind.add,
+                        description=f"Create the verify hook script at {hook_path} for callflow edge '{edge.id}'",
+                        target_field=f"callflow.edges.{edge.id}.expect.verify_hook",
+                        priority=1,
+                    ))
 
 
 # ---------------------------------------------------------------------------
@@ -1175,6 +1291,7 @@ def validate_code(
     _check_required_files(spec, workspace_root, compose_path, diagnostics, actions)
     _check_network_consistency(spec, compose, compose_path, diagnostics, actions)
     _check_test_suite_presence(spec, workspace_root, diagnostics, actions)
+    _check_callflow_contracts(spec, workspace_root, diagnostics, actions)
     _check_static_hygiene(workspace_root, diagnostics, actions)
 
     # --- Phase 3: Build feedback ---

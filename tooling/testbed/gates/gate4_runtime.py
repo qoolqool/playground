@@ -13,8 +13,12 @@ The gate checks:
   1. Lifecycle / readiness — is the stack up? If not, attempt bring-up.
   2. Verify gate — run bootstrap.sh verify (or equivalent), parse pass/fail.
   3. Unhealthy services — if verify names failing services, emit per-service diagnostics.
-  4. E2E happy flow — run the project's e2e happy-flow test as the integration gate.
-  5. Failure evidence — attach short, truncated command output in diagnostics.
+  4. Inter-component callflow — walk every declared callflow edge against its
+     expected result via a protocol adapter or a project-owned verify hook.
+  5. E2E test suite — run the project's e2e test suite (owned by Gate 4, not
+     Gate 2) as the integration gate. Runs via a test-runner container when one
+     exists, or directly on the host for small projects.
+  6. Failure evidence — attach short, truncated command output in diagnostics.
 
 Hard rule:
   After Gate 3 passes → call validate_runtime() →
@@ -54,6 +58,10 @@ ERROR_CODES = {
     "G4_VERIFY_FAILED": "bootstrap.sh verify reported failures",
     "G4_SERVICE_UNHEALTHY": "A specific service is unhealthy",
     "G4_E2E_TEST_FAILED": "E2E happy-flow integration test failed",
+    "G4_CALLFLOW_FAILED": "Inter-component callflow verification failed",
+    "G4_CALLFLOW_UNSUPPORTED": "No adapter registered for a callflow protocol",
+    "G4_CALLFLOW_DISCOVERY": "Could not resolve a callflow target or hook",
+    "G4_SERVICE_ABSENT": "Callflow target service absent from the spec",
     "G4_COMMAND_ERROR": "Tooling or subprocess invocation error",
 }
 
@@ -142,39 +150,50 @@ def _resolve_compose_path(workspace_root: Path) -> Optional[Path]:
     return None
 
 
-def _get_expected_container_count(workspace_root: Path) -> int:
-    """Get the expected number of containers from the spec or fallback list."""
-    spec_paths = [
+def _find_spec(workspace_root: Path):
+    """Locate the testbed spec in the workspace.
+
+    Prefers the legacy hardcoded names for backward compatibility, then falls
+    back to any *-spec.json in the workspace root.
+    """
+    legacy = [
         workspace_root / "quic-edge-v2-spec.json",
         workspace_root / "quic-edge-spec.json",
     ]
-    for sp in spec_paths:
+    for sp in legacy:
         if sp.exists():
-            try:
-                data = json.loads(sp.read_text())
-                services = data.get("services", [])
-                if services:
-                    return len(services)
-            except (json.JSONDecodeError, OSError):
-                pass
+            return sp
+    for sp in sorted(workspace_root.glob("*-spec.json")):
+        if sp.exists():
+            return sp
+    return None
+
+
+def _get_expected_container_count(workspace_root: Path) -> int:
+    """Get the expected number of containers from the spec or fallback list."""
+    sp = _find_spec(workspace_root)
+    if sp is not None:
+        try:
+            data = json.loads(sp.read_text())
+            services = data.get("services", [])
+            if services:
+                return len(services)
+        except (json.JSONDecodeError, OSError):
+            pass
     return len(_EXPECTED_CONTAINERS)
 
 
 def _get_expected_container_names(workspace_root: Path) -> list[str]:
     """Get expected container names from the spec or fallback list."""
-    spec_paths = [
-        workspace_root / "quic-edge-v2-spec.json",
-        workspace_root / "quic-edge-spec.json",
-    ]
-    for sp in spec_paths:
-        if sp.exists():
-            try:
-                data = json.loads(sp.read_text())
-                services = data.get("services", [])
-                if services:
-                    return [s.get("name", "") for s in services if s.get("name")]
-            except (json.JSONDecodeError, OSError):
-                pass
+    sp = _find_spec(workspace_root)
+    if sp is not None:
+        try:
+            data = json.loads(sp.read_text())
+            services = data.get("services", [])
+            if services:
+                return [s.get("name", "") for s in services if s.get("name")]
+        except (json.JSONDecodeError, OSError):
+            pass
     return list(_EXPECTED_CONTAINERS)
 
 
@@ -419,8 +438,189 @@ def _run_verify(
 
 
 # ---------------------------------------------------------------------------
-# Check 3: E2E happy-flow integration test
+# Check 3: Inter-component callflow verification
 # ---------------------------------------------------------------------------
+
+def _resolve_base_host(spec_data: Optional[dict]) -> str:
+    """Resolve the host where published ports are reachable.
+
+    Preference order:
+      1. ``metadata.callflow_base_host`` in the spec
+      2. the host parsed from ``metadata.dood_endpoint`` (e.g. tcp://IP:2375)
+      3. the CALLFLOW_BASE_HOST env var
+      4. ``localhost``
+    """
+    meta = (spec_data or {}).get("metadata") or {}
+    cfg_host = meta.get("callflow_base_host")
+    if cfg_host:
+        return str(cfg_host)
+    de = meta.get("dood_endpoint")
+    if isinstance(de, str) and de.startswith("tcp://"):
+        host = de[len("tcp://"):].rsplit(":", 1)[0]
+        if host:
+            return host
+    if os.environ.get("CALLFLOW_BASE_HOST"):
+        return os.environ["CALLFLOW_BASE_HOST"]
+    return "localhost"
+
+
+def _load_callflow(spec_path: Path) -> list[dict]:
+    """Read the spec's callflow edges. Returns [] when none are declared."""
+    try:
+        data = json.loads(spec_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    return (data.get("callflow") or {}).get("edges", []) or []
+
+
+def _invoke_callflow_edge(
+    edge: dict,
+    services: list[dict],
+    base_host: str,
+    workspace_root: Path,
+    diagnostics: list[Diagnostic],
+    actions: list[Action],
+) -> bool:
+    """Execute one callflow edge and report a diagnostic on failure.
+
+    Returns True if the edge passed (or the target/contract could not be
+    resolved, which is reported as a hard failure with G4_CALLFLOW_DISCOVERY
+    or G4_SERVICE_ABSENT). Returns False on a genuine check failure.
+    """
+    from testbed.adapters import run_edge
+    from testbed.contracts.spec import ContractEdge, ServiceSpec
+
+    edge_id = edge.get("id", "<unnamed-edge>")
+    target_name = edge.get("target")
+    if not target_name:
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_DISCOVERY",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' has no target service",
+            location=Location(field=f"callflow.edges.{edge_id}", source=str(workspace_root)),
+        ))
+        actions.append(Action(
+            kind=ActionKind.fix,
+            description=f"Declare a 'target' service on callflow edge '{edge_id}'",
+            target_field=f"callflow.edges.{edge_id}.target",
+            priority=0,
+        ))
+        return False
+
+    target_service = next((s for s in services if s.get("name") == target_name), None)
+
+    # Convert raw JSON dicts into typed models the adapters expect.
+    edge_obj = ContractEdge(**edge)
+    target_obj = ServiceSpec(**target_service) if target_service else None
+
+    try:
+        result = run_edge(edge_obj, target_obj, base_host, workspace_root)
+    except Exception as exc:
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_DISCOVERY",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' could not be executed",
+            location=Location(field=f"callflow.edges.{edge_id}", source=str(workspace_root)),
+            detail=str(exc),
+        ))
+        return False
+
+    if result.passed:
+        return True
+
+    if target_service is None and "No adapter registered" not in (result.error or ""):
+        diagnostics.append(Diagnostic(
+            code="G4_SERVICE_ABSENT",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' target service '{target_name}' not found in spec",
+            location=Location(field=f"callflow.edges.{edge_id}.target", source=str(workspace_root)),
+        ))
+    elif "No adapter registered" in (result.error or ""):
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_UNSUPPORTED",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' uses unsupported protocol '{edge.get('protocol')}'",
+            location=Location(field=f"callflow.edges.{edge_id}.protocol", source=str(workspace_root)),
+            detail=result.error,
+        ))
+        actions.append(Action(
+            kind=ActionKind.fix,
+            description=f"Register an adapter for protocol '{edge.get('protocol')}' or switch the edge to 'verify-hook'",
+            target_field=f"callflow.edges.{edge_id}.protocol",
+            priority=1,
+        ))
+    else:
+        diagnostics.append(Diagnostic(
+            code="G4_CALLFLOW_FAILED",
+            severity=Severity.error,
+            message=f"Callflow edge '{edge_id}' ({edge.get('source')} -> {target_name}) failed",
+            location=Location(field=f"callflow.edges.{edge_id}", source=str(workspace_root)),
+            detail=result.error,
+        ))
+        actions.append(Action(
+            kind=ActionKind.fix,
+            description=f"Fix inter-component call '{edge.get('source')}' -> '{target_name}'. {result.error}",
+            target_field=f"callflow.edges.{edge_id}",
+            priority=0,
+        ))
+
+    return False
+
+
+def _run_callflow(
+    workspace_root: Path,
+    compose_path: Path,
+    diagnostics: list[Diagnostic],
+    actions: list[Action],
+) -> bool:
+    """Verify every declared inter-component callflow edge against its expected result.
+
+    Reads the spec's callflow section, dispatches each edge to a protocol
+    adapter (or project-owned verify hook), and reports a per-edge diagnostic
+    on any mismatch. Returns False if any edge fails.
+
+    If no callflow is declared in the spec, this check passes as optional.
+    """
+    spec_path = _find_spec(workspace_root)
+    if spec_path is None:
+        return True
+
+    try:
+        data = json.loads(spec_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return True
+
+    edges = (data.get("callflow") or {}).get("edges", []) or []
+    if not edges:
+        return True
+
+    base_host = _resolve_base_host(data)
+    services = data.get("services", [])
+    ok = True
+    for edge in edges:
+        passed = _invoke_callflow_edge(
+            edge, services, base_host, workspace_root, diagnostics, actions,
+        )
+        if not passed:
+            ok = False
+
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Check 4: E2E happy-flow integration test
+# ---------------------------------------------------------------------------
+
+def _compose_has_service(compose_path: Path, service_name: str) -> bool:
+    """Return True if the compose file declares the given service."""
+    rc, stdout, stderr = _run_command(
+        ["docker", "compose", "-f", str(compose_path), "config", "--services"],
+        timeout=60,
+    )
+    if rc != 0:
+        return False
+    return service_name in stdout.split()
+
 
 def _run_e2e_happy_flow(
     workspace_root: Path,
@@ -429,63 +629,64 @@ def _run_e2e_happy_flow(
     diagnostics: list[Diagnostic],
     actions: list[Action],
 ) -> bool:
-    """Run the E2E happy-flow test as the integration gate pass criteria.
+    """Run the E2E test suite as the integration gate pass criteria.
 
-    Discovers the happy-flow test file by searching for '*happy_flow*' under
-    tests/e2e/. Runs it via docker compose exec test-runner.
+    The E2E suite is owned by Gate 4, not Gate 2. It is discovered from the
+    spec (a suite named 'e2e' or tagged/marked 'live'). It runs either:
+      1. via a test-runner container (docker compose exec test-runner), or
+      2. directly on the host with pytest and the suite's markers, when no
+         test-runner service exists (small projects).
 
     Returns True if the test passes, False otherwise.
     """
-    # Discover the happy-flow test file
-    e2e_dir = workspace_root / "tests" / "e2e"
-    if not e2e_dir.exists():
+    # Discover the E2E test suite from the spec
+    spec_path = _find_spec(workspace_root)
+    e2e_suite = None
+    if spec_path is not None:
+        try:
+            data = json.loads(spec_path.read_text())
+            for ts in data.get("test_suites", []):
+                name = (ts.get("name") or "").lower()
+                tags = {t.lower() for t in (ts.get("tags") or [])}
+                markers = {m.lower() for m in (ts.get("markers") or [])}
+                if name == "e2e" or bool(tags & {"e2e", "live"}) or bool(markers & {"live"}):
+                    e2e_suite = ts
+                    break
+        except (json.JSONDecodeError, OSError):
+            e2e_suite = None
+
+    if e2e_suite is None:
         diagnostics.append(Diagnostic(
             code="G4_COMMAND_ERROR",
             severity=Severity.warning,
-            message=f"E2E test directory not found: {e2e_dir}",
-            location=Location(field="test_suites.e2e", source=str(e2e_dir)),
-        ))
-        actions.append(Action(
-            kind=ActionKind.add,
-            description=f"Create E2E test directory at {e2e_dir} with a happy-flow test",
-            target_field="test_suites.e2e",
-            priority=2,
+            message="No E2E test suite found in the spec (expected a suite named 'e2e' or tagged/marked 'live')",
+            location=Location(field="test_suites.e2e", source=str(spec_path) if spec_path else str(workspace_root)),
         ))
         # Not a hard failure — the verify gate already passed
         return True
 
-    happy_flow_files = list(e2e_dir.rglob("*happy_flow*"))
-    if not happy_flow_files:
-        diagnostics.append(Diagnostic(
-            code="G4_COMMAND_ERROR",
-            severity=Severity.warning,
-            message=f"No happy-flow test file found under {e2e_dir} (searched for *happy_flow*)",
-            location=Location(field="test_suites.e2e", source=str(e2e_dir)),
-            detail="Skipping E2E test. Add a test file matching *happy_flow*.py to enable this check.",
-        ))
-        # Not a hard failure — the verify gate already passed
-        return True
+    test_path = e2e_suite.get("path", "tests/")
+    marker_args: list[str] = []
+    for m in e2e_suite.get("markers", []):
+        marker_args += ["-m", m]
 
-    # Pick the first happy-flow test file
-    happy_flow_file = happy_flow_files[0]
-    test_path = happy_flow_file.relative_to(workspace_root) if happy_flow_file.is_relative_to(workspace_root) else happy_flow_file
-
-    # Run via docker compose exec test-runner
-    rc, stdout, stderr = _run_command(
-        [
+    # Decide how to run: test-runner container (larger projects) or direct host
+    # run (small projects). This is an explicit decision, not a guess.
+    if _compose_has_service(compose_path, "test-runner"):
+        cmd = [
             "docker", "compose", "-f", str(compose_path),
             "exec", "-T", "test-runner",
             "python3", "-m", "pytest",
-            str(test_path),
-            "-v",
-            "-s",
-            "--no-header",
-            "-x",  # Stop on first failure
-        ],
-        cwd=workspace_root,
-        timeout=timeout,
-    )
+            test_path, "-v", "-s", "--no-header", "-x",
+        ] + marker_args
+    else:
+        # Small project: run directly on the host, hitting published ports
+        cmd = [
+            "python3", "-m", "pytest",
+            test_path, "-v", "-s", "--no-header", "-x",
+        ] + marker_args
 
+    rc, stdout, stderr = _run_command(cmd, cwd=workspace_root, timeout=timeout)
     output = stdout + "\n" + stderr
 
     if rc != 0:
@@ -498,8 +699,8 @@ def _run_e2e_happy_flow(
         diagnostics.append(Diagnostic(
             code="G4_E2E_TEST_FAILED",
             severity=Severity.error,
-            message=f"E2E happy-flow test failed (exit code {rc})",
-            location=Location(field="test_suites.e2e", source=str(happy_flow_file)),
+            message=f"E2E test suite failed (exit code {rc})",
+            location=Location(field="test_suites.e2e", source=str(test_path)),
             detail=_truncate_output(
                 (fail_summary or output),
                 _MAX_OUTPUT_LINES,
@@ -508,8 +709,7 @@ def _run_e2e_happy_flow(
         actions.append(Action(
             kind=ActionKind.fix,
             description=f"Run the E2E test manually to see full output:\n"
-                        f"  docker compose -f {compose_path} exec test-runner \\\n"
-                        f"    python3 -m pytest {test_path} -v -s\n"
+                        f"  python3 -m pytest {test_path} -v -s\n"
                         f"Fix the failing test and re-run Gate 4.",
             target_field="test_suites.e2e",
             priority=1,
@@ -642,7 +842,26 @@ def validate_runtime(
             **feedback_kwargs,
         )
 
-    # --- Phase 3: E2E happy-flow integration test ---
+    # --- Phase 3: Inter-component callflow verification ---
+    callflow_passed = _run_callflow(workspace_root, compose_path, diagnostics, actions)
+
+    if not callflow_passed:
+        duration_ms = int((time.time() - start_time) * 1000)
+        metadata = {"attempt_number": attempt_number}
+        if previous_summary:
+            metadata["previous_summary"] = previous_summary
+
+        return GateFeedback(
+            status=GateStatus.fail,
+            diagnostics=diagnostics,
+            actions=_sort_and_cap_actions(actions),
+            duration_ms=duration_ms,
+            attempt_number=attempt_number,
+            metadata=metadata,
+            **feedback_kwargs,
+        )
+
+    # --- Phase 4: E2E happy-flow integration test ---
     e2e_passed = _run_e2e_happy_flow(
         workspace_root, compose_path, e2e_timeout, diagnostics, actions,
     )

@@ -164,6 +164,93 @@ class GuardrailSpec(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Inter-component callflow contracts
+# ---------------------------------------------------------------------------
+
+class ExpectMode(str, Enum):
+    """How an expected result is checked. Keeps the schema protocol-agnostic.
+
+    - exact:        parsed response must equal the expected value
+    - contains:     expected dict must be a recursive subset of the response
+    - success:      only the status code must match; body is ignored
+    - verify_hook:  a project-owned checker runs and decides pass/fail
+    """
+    exact = "exact"
+    contains = "contains"
+    success = "success"
+    verify_hook = "verify_hook"
+
+
+class ContractExpect(BaseModel):
+    """The expected outcome of one inter-component call."""
+    mode: ExpectMode = Field(
+        ExpectMode.exact,
+        description="How the response is checked against the expected result",
+    )
+    status: Optional[int] = Field(
+        None,
+        ge=100,
+        le=599,
+        description="Expected status/response code (when the protocol has one)",
+    )
+    body: Optional[Any] = Field(
+        None,
+        description="Expected response body for exact/contains modes",
+    )
+    verify_hook: Optional[str] = Field(
+        None,
+        description="Path (relative to workspace) to a project-owned checker for verify_hook mode",
+    )
+
+
+class ContractEdge(BaseModel):
+    """One directional inter-component call to verify at runtime.
+
+    The edge declares WHAT should happen. A protocol adapter decides HOW to
+    make the call. This keeps the schema generic: adding a protocol never
+    requires changing this model, only registering an adapter.
+    """
+    id: str = Field(..., min_length=1, description="Unique edge id, e.g. 'consumer->api.summary'")
+    source: str = Field(
+        ..., min_length=1, description="Caller service name (must match a declared service)"
+    )
+    target: str = Field(
+        ..., min_length=1, description="Callee service name (must match a declared service)"
+    )
+    protocol: str = Field(
+        "http",
+        min_length=1,
+        description="Adapter discriminator: http, grpc, dlt-invoke, verify-hook, ...",
+    )
+    description: Optional[str] = Field(None, description="Why this call exists")
+    request: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Protocol-specific request spec (http: method + path)",
+    )
+    expect: ContractExpect = Field(
+        default_factory=ContractExpect,
+        description="Expected result for this call",
+    )
+
+
+class CallflowSpec(BaseModel):
+    """The declared inter-component callflow: the expected result to verify.
+
+    The spec carries the callflow as data; it never executes it. Gate 2
+    validates the shape statically, and Gate 4 dispatches each edge to a
+    protocol adapter or a project-owned verify hook.
+    """
+    edges: list[ContractEdge] = Field(
+        default_factory=list,
+        description="Ordered list of inter-component call contracts",
+    )
+    entry: Optional[str] = Field(
+        None,
+        description="Edge id to start the walk when ordering matters (future use)",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Top-level spec
 # ---------------------------------------------------------------------------
 
@@ -202,6 +289,12 @@ class TestbedSpec(BaseModel):
     guardrails: GuardrailSpec = Field(
         default_factory=GuardrailSpec,
         description="Security and policy guardrails",
+    )
+
+    # Inter-component callflow contracts
+    callflow: CallflowSpec = Field(
+        default_factory=CallflowSpec,
+        description="Declared inter-component callflow (expected result to verify at runtime)",
     )
 
     # Extensibility
@@ -256,3 +349,39 @@ class TestbedSpec(BaseModel):
             if s.name == name:
                 return s
         return None
+
+    # ------------------------------------------------------------------
+    # Callflow validators
+    # ------------------------------------------------------------------
+
+    @model_validator(mode="after")
+    def check_callflow_edge_ids_unique(self) -> "TestbedSpec":
+        seen: dict[str, int] = {}
+        for edge in self.callflow.edges:
+            seen[edge.id] = seen.get(edge.id, 0) + 1
+        dups = {k: v for k, v in seen.items() if v > 1}
+        if dups:
+            raise ValueError(f"Duplicate callflow edge ids: {list(dups)}")
+        return self
+
+    @model_validator(mode="after")
+    def check_callflow_services_exist(self) -> "TestbedSpec":
+        valid_names = {s.name for s in self.services}
+        for edge in self.callflow.edges:
+            for role in (edge.source, edge.target):
+                if role not in valid_names:
+                    raise ValueError(
+                        f"Callflow edge '{edge.id}' references service '{role}' "
+                        f"which is not declared in services"
+                    )
+        if self.callflow.entry and self.callflow.entry not in {
+            e.id for e in self.callflow.edges
+        }:
+            raise ValueError(
+                f"Callflow entry '{self.callflow.entry}' does not match any edge id"
+            )
+        return self
+
+    def callflow_edges(self) -> list[ContractEdge]:
+        """Convenience: list all declared callflow edges."""
+        return list(self.callflow.edges)

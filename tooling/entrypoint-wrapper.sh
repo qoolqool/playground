@@ -53,7 +53,7 @@ if [ -d "$MARKETPLACE_SKILLS" ]; then
 fi
 
 SCRIPT_SYMLINKS=(
-  "search-kb-memory.py:../skills/search-kb/search-kb-memory.py"
+  "search-kb-memory.py:../obs/search_wrapper.py"
   "load-kb-to-memory.py:../skills/distill-and-index/load-kb-to-memory.py"
 )
 for entry in "${SCRIPT_SYMLINKS[@]}"; do
@@ -177,6 +177,17 @@ if [ -d "$PI_CONFIG_SRC" ]; then
   done
 fi
 
+# --- Extension package updates ---
+# Bring all pi extension packages (pi-hermes-memory, @ollama/pi-web-search, ...)
+# to their latest versions on every container start. This is the safety net that
+# prevents the "Package Updates Available" banner from persisting after a
+# `bootstrap -f` (which otherwise reverts to whatever stale versions are baked
+# into the image). Non-fatal: if offline or npm is unreachable, we keep going.
+if command -v pi >/dev/null 2>&1; then
+  echo "Updating pi extension packages to latest..."
+  pi update --extensions || echo "⚠ pi update --extensions failed (non-fatal)"
+fi
+
 # Ensure nvim plugins & tools are installed (first run only)
 if [ ! -d "${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy" ]; then
   echo "Installing nvim plugins (first run)..."
@@ -205,6 +216,27 @@ echo "|    Host IP (local models): $HOST_IP                     "
 echo "╚════════════════════════════════════════════════════════╝"
 
 alias vi=nvim
+
+# --- Propagate kb-cli source edits to the installed copy ---
+# The installed `kb` is a build-time copy; re-copy from source so obs
+# instrumentation and other edits take effect without a full image rebuild.
+if [ -f /project/tooling/skills/install-kb-cli/kb-cli.py ]; then
+  cp /project/tooling/skills/install-kb-cli/kb-cli.py /home/tool/.local/bin/kb
+  chmod +x /home/tool/.local/bin/kb
+  echo "Synced kb CLI from source"
+fi
+
+# --- Auto-start ollama serve (background) ---
+if ! pgrep -f 'ollama serve' >/dev/null 2>&1; then
+  nohup ollama serve >/dev/null 2>&1 &
+  echo "Started ollama serve (background)"
+fi
+
+# --- Auto-start obs dashboard server (background, port 8080) ---
+# The obs web server now runs in its own socket-free container (see
+# docker-compose.yml `obs` service). The tooling container no longer starts it.
+# The obs-sampler sidecar (which holds the Docker socket) runs separately.
+mkdir -p /project/.agent/obs
 
 # Execute the main command. If no command is given, default to running ollama
 if [ $# -gt 0 ]; then

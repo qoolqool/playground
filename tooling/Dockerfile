@@ -1,3 +1,49 @@
+# =============================================================
+# BUILDER STAGE: compile better-sqlite3 native addon
+# The runtime needs better-sqlite3, a native Node addon that must be
+# compiled against the exact Node ABI (24.16.0 / v137). This stage
+# carries the full C/C++ toolchain, compiles the addon, and produces a
+# single .node binary. The final image stays toolchain-free (lighter)
+# and just copies that one binary across.
+# =============================================================
+FROM debian:trixie-slim AS better-sqlite3-builder
+
+USER root
+
+RUN apt update && apt install --no-install-recommends -y \
+    ca-certificates curl build-essential python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Same Node version/arch as the final image so the ABI matches (v137).
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+      x86_64)  NODE_ARCH="x64" ;; \
+      aarch64|arm64) NODE_ARCH="arm64" ;; \
+      *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
+    esac; \
+    NODE_VERSION="24.16.0"; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.gz" \
+      -o /tmp/node.tar.gz; \
+    tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1; \
+    rm -rf /tmp/node.tar.gz; \
+    node --version; npm --version
+
+# Fetch better-sqlite3 (the exact version pi-hermes-memory uses) WITHOUT
+# running its install script. npm 12 blocks install scripts by default, and
+# --build-from-source is no longer a supported flag, so we compile explicitly
+# below with node-gyp (which already works in the container's live fix).
+RUN mkdir -p /build && cd /build && \
+    npm init -y >/dev/null && \
+    npm install --ignore-scripts better-sqlite3@12.11.1 && \
+    cd node_modules/better-sqlite3 && \
+    npx --yes node-gyp rebuild --release && \
+    node -e "require(process.cwd()); console.log('better-sqlite3 compiled OK')" && \
+    ls -la build/Release/better_sqlite3.node
+
+# =============================================================
+# FINAL (RUNTIME) STAGE — no C/C++ toolchain, stays lightweight
+# =============================================================
 FROM debian:trixie-slim
 
 USER root
@@ -170,14 +216,29 @@ RUN mkdir -p /home/tool/.npm-global && \
 # 3. Now global installs will work without sudo/root
 # Install Pi coding agent globally
 # Use the updated namespace
+# CACHEBUST must be referenced by the RUN below, otherwise BuildKit does not
+# include it in the layer's cache key and `bootstrap -f` won't actually
+# reinstall pi / the extensions (the stale-version bug).
 ARG CACHEBUST=1
-RUN npm install -g @earendil-works/pi-coding-agent
+RUN echo "cachebust: $CACHEBUST" && npm install -g @earendil-works/pi-coding-agent
 
 # Install local distill-rag-bridge from your copied local directory
 RUN pi install /home/tool/.local/share/skill-marketplace/plugins/distill-rag-bridge || true
 
 # Install pi-hermes-memory (persistent memory + session search + secret scanning)
 RUN pi install npm:pi-hermes-memory || true
+
+# Install @ollama/pi-web-search (web search tool). Kept in the Dockerfile so it
+# is pinned at build time and survives `bootstrap -f` (previously only added at
+# runtime, so it vanished on every rebuild).
+RUN pi install npm:@ollama/pi-web-search || true
+
+# Inject the toolchain-built better-sqlite3 native addon (compiled in the
+# builder stage against Node ABI v137). Runtime has no compiler, so this
+# binary is required for session search / persistent memory to work.
+COPY --from=better-sqlite3-builder --chown=tool:tool \
+    /build/node_modules/better-sqlite3/build/Release/better_sqlite3.node \
+    /home/tool/.pi/agent/npm/node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
 # Install subagent extension and agent definitions
 COPY --chown=tool:tool extensions/logging.ts /home/tool/.pi/agent/extensions/logging.ts
@@ -197,7 +258,7 @@ COPY --chown=tool:tool scripts/atlassian-cli.py scripts/atlassian-cli.py
 # --- KNOWLEDGEBASE VECTOR SEARCH + CENTRAL KB CLI --------------------------------
 # Central KB CLI only. Local vector DB removed in favor of graphify/Ollama.
 # kb-cli.py is bundled inside skill-marketplace submodule.
-# Embeddings: Central KB embed-server HTTP sidecar or Ollama bge-large:latest fallback.
+# Embeddings: Central KB embed-server HTTP sidecar or Ollama bge-small:latest fallback.
 
 # Install kb CLI (Central Knowledge Base)
 COPY --chown=tool:tool skills/install-kb-cli/ /tmp/kb-skill/

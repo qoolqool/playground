@@ -6,6 +6,7 @@
 #   - docker binary is podman wrapper → use podman  (podman-docker package)
 #   - no docker, only podman         → use podman  (alias-only setups)
 #   - neither found                  → default to docker (will error at runtime)
+# export PODMAN_VM_IP="127.0.0.1"
 detect_container_cmd() {
     if command -v docker >/dev/null 2>&1; then
         # docker binary exists — is it real Docker or podman in disguise?
