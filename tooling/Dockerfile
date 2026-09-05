@@ -216,14 +216,22 @@ RUN mkdir -p /home/tool/.npm-global && \
 # 3. Now global installs will work without sudo/root
 # Install Pi coding agent globally
 # Use the updated namespace
+# CACHEBUST must be referenced by the RUN below, otherwise BuildKit does not
+# include it in the layer's cache key and `bootstrap -f` won't actually
+# reinstall pi / the extensions (the stale-version bug).
 ARG CACHEBUST=1
-RUN npm install -g @earendil-works/pi-coding-agent
+RUN echo "cachebust: $CACHEBUST" && npm install -g @earendil-works/pi-coding-agent
 
 # Install local distill-rag-bridge from your copied local directory
 RUN pi install /home/tool/.local/share/skill-marketplace/plugins/distill-rag-bridge || true
 
 # Install pi-hermes-memory (persistent memory + session search + secret scanning)
 RUN pi install npm:pi-hermes-memory || true
+
+# Install @ollama/pi-web-search (web search tool). Kept in the Dockerfile so it
+# is pinned at build time and survives `bootstrap -f` (previously only added at
+# runtime, so it vanished on every rebuild).
+RUN pi install npm:@ollama/pi-web-search || true
 
 # Inject the toolchain-built better-sqlite3 native addon (compiled in the
 # builder stage against Node ABI v137). Runtime has no compiler, so this

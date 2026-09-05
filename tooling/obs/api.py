@@ -11,19 +11,41 @@ Runs inside the tooling container on port 8080 (uvicorn obs.api:app).
 """
 import asyncio
 import json
+import os
+import secrets
 import statistics
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from starlette.routing import Route
 
-from . import sampler, store
+from . import store
 
 STATIC_DIR = Path(__file__).parent / "static"
 SUMMARY_WINDOW_MIN = 10
+
+# Optional shared-secret auth. If OBS_TOKEN is unset the API is open (rely on
+# loopback-only binding in entrypoint). If set, every route except /obs/health
+# requires `Authorization: Bearer <OBS_TOKEN>`.
+OBS_TOKEN = os.environ.get("OBS_TOKEN", "")
+
+# Cap concurrent SSE clients to bound resource use (unauthenticated DoS guard).
+MAX_SSE_CLIENTS = 20
+_sse_clients = 0
+_sse_clients_lock = asyncio.Lock()
+
+
+def _check_auth(request):
+    """Return an error response if the request is unauthorized, else None."""
+    if not OBS_TOKEN:
+        return None
+    supplied = request.headers.get("Authorization", "")
+    if secrets.compare_digest(supplied, f"Bearer {OBS_TOKEN}"):
+        return None
+    return JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
 def _now_ts() -> float:
@@ -62,15 +84,32 @@ def _summary() -> dict:
 
 async def _events_sse(request):
     """SSE stream: yield each new event as it's appended to the JSONL file."""
+    auth = _check_auth(request)
+    if auth is not None:
+        return auth
+
+    global _sse_clients
+    async with _sse_clients_lock:
+        if _sse_clients >= MAX_SSE_CLIENTS:
+            return JSONResponse({"error": "too many connections"}, status_code=429)
+        _sse_clients += 1
+
     async def gen():
-        last_count = store.event_count()
-        while True:
-            count = store.event_count()
-            if count > last_count:
-                for e in store.read_events(count - last_count):
-                    yield f"data: {json.dumps(e)}\n\n"
-                last_count = count
-            await asyncio.sleep(1)
+        global _sse_clients
+        try:
+            last_count = store.event_count()
+            while True:
+                if await request.is_disconnected():
+                    break
+                count = store.event_count()
+                if count > last_count:
+                    for e in store.read_events(count - last_count):
+                        yield f"data: {json.dumps(e)}\n\n"
+                    last_count = count
+                await asyncio.sleep(1)
+        finally:
+            async with _sse_clients_lock:
+                _sse_clients -= 1
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
@@ -78,15 +117,36 @@ async def _events_sse(request):
 
 
 def _index(request):
-    return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+    auth = _check_auth(request)
+    if auth is not None:
+        return auth
+    return HTMLResponse(
+        (STATIC_DIR / "index.html").read_text(encoding="utf-8"),
+        headers={"Content-Security-Policy": "default-src 'self'"},
+    )
+
+
+def _root(request):
+    """Redirect the bare root to the dashboard so /obs is reachable at /."""
+    return RedirectResponse("/obs", status_code=302)
 
 
 def _raw(request):
-    n = int(request.query_params.get("n", 100))
+    auth = _check_auth(request)
+    if auth is not None:
+        return auth
+    try:
+        n = int(request.query_params.get("n", 100))
+    except ValueError:
+        n = 100
+    n = max(0, min(n, 1000))
     return JSONResponse(store.read_events(n))
 
 
 def _summary_route(request):
+    auth = _check_auth(request)
+    if auth is not None:
+        return auth
     return JSONResponse(_summary())
 
 
@@ -94,18 +154,46 @@ def _health(request):
     return JSONResponse({"status": "ok", "service": "obs"})
 
 
+async def _mark_used(request):
+    """POST /obs/used — mark matching events as used.
+
+    Body (all optional): {"id", "session_id", "turn_id", "query", "all"}.
+    Returns {"marked": n}.
+    """
+    auth = _check_auth(request)
+    if auth is not None:
+        return auth
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    n = store.mark_used(
+        event_id=body.get("id"),
+        session_id=body.get("session_id"),
+        turn_id=body.get("turn_id"),
+        query=body.get("query"),
+        all_matching=bool(body.get("all")),
+    )
+    return JSONResponse({"marked": n})
+
+
 routes = [
+    Route("/", _root),
     Route("/obs", _index),
     Route("/obs/events", _events_sse),
     Route("/obs/summary", _summary_route),
     Route("/obs/raw", _raw),
+    Route("/obs/used", _mark_used, methods=["POST"]),
     Route("/obs/health", _health),
 ]
 
 
 @asynccontextmanager
 async def lifespan(app):
-    sampler.start_sampler()
+    # The sampler runs in its own sidecar container (obs-sampler) so this web
+    # process never holds the Docker socket. Nothing to start here.
     yield
 
 

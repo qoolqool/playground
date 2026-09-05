@@ -64,3 +64,17 @@ def start_sampler(interval: float = INTERVAL) -> threading.Thread:
     t = threading.Thread(target=_run, daemon=True, name="obs-sampler")
     t.start()
     return t
+
+
+def main(interval: float = INTERVAL) -> None:
+    """Run the sampler loop in the foreground (sidecar container entrypoint)."""
+    while True:
+        try:
+            sample_once()
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    main()

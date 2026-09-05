@@ -100,3 +100,52 @@ def test_api_index_serves_html():
         r = c.get("/obs")
         assert r.status_code == 200
         assert "KB Obs" in r.text
+
+
+def test_emit_adds_id():
+    emitter.emit({"query_used": "q"})
+    ev = store.read_events(1)[0]
+    assert ev["id"]
+
+
+def test_mark_used_by_id():
+    emitter.emit_search(query_original="q", query_used="q", backend="local-vector",
+                        latency_ms=5, top_k=3, results=[])
+    ev = store.read_events(1)[0]
+    assert ev["used"] is None
+    n = store.mark_used(event_id=ev["id"])
+    assert n == 1
+    assert store.read_events(1)[0]["used"] is True
+    # idempotent
+    assert store.mark_used(event_id=ev["id"]) == 0
+
+
+def test_mark_used_by_query_marks_latest_only():
+    for _ in range(3):
+        emitter.emit_search(query_original="dup", query_used="dup", backend="central-kb",
+                            latency_ms=5, top_k=1, results=[])
+    n = store.mark_used(query="dup")
+    assert n == 1
+    events = store.read_events(10)
+    assert [e["used"] for e in events] == [None, None, True]
+    # all_matching marks the rest
+    assert store.mark_used(query="dup", all_matching=True) == 2
+
+
+def test_api_mark_used():
+    from starlette.testclient import TestClient
+    emitter.emit_search(query_original="q", query_used="q", backend="local-vector",
+                        latency_ms=5, top_k=3, results=[])
+    ev = store.read_events(1)[0]
+    with TestClient(app) as c:
+        r = c.post("/obs/used", json={"id": ev["id"]})
+        assert r.status_code == 200
+        assert r.json()["marked"] == 1
+    assert store.read_events(1)[0]["used"] is True
+
+
+def test_api_mark_used_bad_body():
+    from starlette.testclient import TestClient
+    with TestClient(app) as c:
+        r = c.post("/obs/used", content="not json", headers={"Content-Type": "application/json"})
+        assert r.status_code == 400

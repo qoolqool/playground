@@ -1,5 +1,7 @@
 [user]
 	name = Developer
 	email = dev@example.com
+[core]
+	editor = nvim
 [credential]
 	helper = cache --timeout=28800

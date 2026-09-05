@@ -4,14 +4,17 @@ Pure stdlib, append-only, <1ms per emit. The file lives on the volume-mounted
 /project so it survives container restarts. The obs server (separate process)
 reads the same file via store.py.
 """
+import fcntl
 import json
 import os
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 OBS_DIR = Path(os.environ.get("OBS_DIR", "/project/.agent/obs"))
 EVENTS_FILE = OBS_DIR / "events.jsonl"
+LOCK_FILE = OBS_DIR / "events.lock"
 
 _lock = threading.Lock()
 
@@ -24,11 +27,17 @@ def emit(event: dict) -> None:
     """Append one structured event as a single JSON line. Thread-safe, <1ms."""
     OBS_DIR.mkdir(parents=True, exist_ok=True)
     event.setdefault("ts", _now())
+    event.setdefault("id", uuid.uuid4().hex)
     line = json.dumps(event, ensure_ascii=False)
     with _lock:
-        with open(EVENTS_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-            f.flush()
+        with open(LOCK_FILE, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                with open(EVENTS_FILE, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+                    f.flush()
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def emit_search(

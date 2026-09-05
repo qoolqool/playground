@@ -3,9 +3,8 @@ services:
     build:
       context: ./tooling
       dockerfile: Dockerfile
-    container_name: ptooling
-    ports:
-      - "8080:8080"
+    image: playground-tooling:latest
+    container_name: playground-tooling
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -21,4 +20,41 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "host.containers.internal:host-gateway"
+    restart: unless-stopped
+
+  # Obs web server — NO Docker socket. Reads events/samples from the shared
+  # /project volume. Bound to loopback only (127.0.0.1:8080 on the host).
+  obs:
+    image: playground-tooling:latest
+    container_name: pobs
+    ports:
+      - "127.0.0.1:8080:8080"
+    working_dir: /project/tooling
+    # Run uvicorn directly instead of the tooling image's heavy ENTRYPOINT
+    # (git submodule sync, pi update, ollama serve, ...) which is meant for the
+    # tooling container only.
+    entrypoint: ["uvicorn"]
+    command: ["obs.api:app", "--host", "127.0.0.1", "--port", "8080"]
+    volumes:
+      - ./:/project
+    environment:
+      - TZ=Asia/Kuala_Lumpur
+      - OBS_TOKEN=${OBS_TOKEN:-}
+    restart: unless-stopped
+
+  # Obs sampler sidecar — HAS the Docker socket (needs `docker stats`), but is
+  # NOT network-exposed. Writes memory samples to the shared /project volume.
+  obs-sampler:
+    image: playground-tooling:latest
+    container_name: pobs-sampler
+    working_dir: /project/tooling
+    entrypoint: ["python3", "-m"]
+    command: ["obs.sampler"]
+    volumes:
+      - ./:/project
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    environment:
+      - TZ=Asia/Kuala_Lumpur
+      - EMBED_CONTAINER=${EMBED_CONTAINER:-central-kb-embed}
+      - OBS_SAMPLE_INTERVAL=${OBS_SAMPLE_INTERVAL:-30}
     restart: unless-stopped

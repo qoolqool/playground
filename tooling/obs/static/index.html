@@ -42,6 +42,10 @@
   .res .title { color:var(--txt); }
   .res .snip { color:var(--mut); }
   .toggle { cursor:pointer; color:var(--mut); font-size:12px; user-select:none; }
+  .mark { cursor:pointer; font-size:11px; padding:2px 8px; border-radius:20px;
+          border:1px solid var(--line); background:transparent; color:var(--mut); }
+  .mark:hover { border-color:var(--ok); color:var(--ok); }
+  .mark.done { border-color:var(--ok); color:var(--ok); }
   .empty { color:var(--mut); text-align:center; padding:40px; }
 </style>
 </head>
@@ -81,9 +85,9 @@ function render(){
   if (!events.length){ feed.innerHTML = '<div class="empty">Waiting for retrieval events…</div>'; return; }
   feed.innerHTML = events.map((e,i) => {
     const top = (e.results && e.results[0]) || null;
-    const topScore = top ? top.score.toFixed(3) : '–';
+    const topScore = top && typeof top.score === 'number' ? top.score.toFixed(3) : '–';
     const resHtml = (e.results||[]).map(r =>
-      `<div class="res"><span class="score">${r.score.toFixed(3)}</span> <span class="title">${esc(r.title||r.id||'')}</span> <span class="snip">${esc((r.snippet||'').slice(0,80))}</span></div>`
+      `<div class="res"><span class="score">${typeof r.score === 'number' ? r.score.toFixed(3) : '–'}</span> <span class="title">${esc(r.title||r.id||'')}</span> <span class="snip">${esc((r.snippet||'').slice(0,80))}</span></div>`
     ).join('');
     return `<div class="ev" id="ev-${i}">
       <div class="row">
@@ -92,6 +96,7 @@ function render(){
         <span class="lat">${e.latency_ms != null ? e.latency_ms+'ms' : '–'}</span>
         <span class="meta">top ${e.top_k ?? '–'} · score ${topScore}</span>
         ${usedBadge(e.used)}
+        ${e.used === true ? '' : `<button class="mark" onclick="markUsed('${esc(e.id||'')}')">use</button>`}
         ${e.error ? `<span class="err">${esc(e.error)}</span>` : ''}
         <span class="toggle" onclick="toggle(${i})">▸</span>
       </div>
@@ -103,6 +108,18 @@ function toggle(i){
   const el = document.getElementById('ev-'+i);
   el.classList.toggle('open');
   el.querySelector('.toggle').textContent = el.classList.contains('open') ? '▾' : '▸';
+}
+function markUsed(id){
+  if (!id) return;
+  fetch('/obs/used', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ id }) })
+    .then(r=>r.json()).then(res => {
+      if (res.marked > 0){
+        const ev = events.find(e => e.id === id);
+        if (ev) ev.used = true;
+        render(); refreshSummary();
+      }
+    }).catch(()=>{});
 }
 function updateSummary(s){
   document.getElementById('c-count').textContent = s.search_count ?? '–';
@@ -127,6 +144,10 @@ function connect(){
 fetch('/obs/raw?n=50').then(r=>r.json()).then(d => { events = d; render(); }).catch(()=>{});
 refreshSummary();
 setInterval(refreshSummary, 10000);
+// periodic re-fetch so CLI-driven 'used' changes show up
+setInterval(() => {
+  fetch('/obs/raw?n=200').then(r=>r.json()).then(d => { events = d; render(); }).catch(()=>{});
+}, 15000);
 connect();
 </script>
 </body>

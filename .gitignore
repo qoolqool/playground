@@ -75,3 +75,4 @@ tarball/
 tooling/scripts/load-kb-to-memory.py
 tooling/scripts/search-kb-memory.py
 projects.yml
+tooling/skills/distill-and-index

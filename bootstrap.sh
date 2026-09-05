@@ -132,8 +132,8 @@ if [ "$SETUP_CENTRAL_KB" = true ]; then
 
     CENTRAL_KB_RUNNING=false
     if command -v curl >/dev/null 2>&1; then
-        if curl -sf "http://${KB_HOST}:9000/health" >/dev/null 2>&1 && \
-           curl -sf "http://${KB_HOST}:9001/health" >/dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:9000/health" >/dev/null 2>&1 && \
+           curl -sf "http://127.0.0.1:9001/health" >/dev/null 2>&1; then
             CENTRAL_KB_RUNNING=true
         fi
     fi
@@ -167,7 +167,7 @@ if [ "$SETUP_CENTRAL_KB" = true ]; then
         echo "Waiting for embed-server (port 9001)..."
         EMBED_READY=false
         for i in $(seq 1 20); do
-            if curl -sf "http://${KB_HOST}:9001/health" >/dev/null 2>&1; then
+            if curl -sf "http://127.0.0.1:9001/health" >/dev/null 2>&1; then
                 EMBED_READY=true
                 break
             fi
@@ -185,7 +185,7 @@ if [ "$SETUP_CENTRAL_KB" = true ]; then
         echo "Waiting for central-kb API (port 9000)..."
         KB_READY=false
         for i in $(seq 1 10); do
-            if curl -sf "http://${KB_HOST}:9000/health" >/dev/null 2>&1; then
+            if curl -sf "http://127.0.0.1:9000/health" >/dev/null 2>&1; then
                 KB_READY=true
                 break
             fi
@@ -309,7 +309,6 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     $DOCKER run -d --name "$CONTAINER_NAME" \
         --restart unless-stopped \
         -t -i \
-        -p 8080:8080 \
         -v "${MOUNT_TARGET}:/workspace:${WORKSPACE_MODE}" \
         $ENV_CKB \
         -v "${SOCKET_MOUNT}:/var/run/docker.sock" \
@@ -345,6 +344,16 @@ else
         $DOCKER start "$CONTAINER_NAME" >/dev/null
     fi
 fi
+
+# ---------- KB Obs containers ----------
+# The obs dashboard (web UI, port 8080) and the obs-sampler (embed-memory
+# metrics) run as their own docker-compose services (`obs` / `obs-sampler`).
+# They are NOT part of the tooling container, so bootstrap.sh must start them
+# explicitly here. The sampler needs the Docker socket (mounted in compose).
+echo ""
+echo "Starting KB obs containers (dashboard + sampler)..."
+$DOCKER compose up -d obs obs-sampler \
+  || echo "⚠ obs containers failed to start (non-fatal)"
 
 # Enter the container (with retry to handle race condition on startup)
 echo ""
