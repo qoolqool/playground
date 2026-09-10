@@ -266,3 +266,7 @@ After syncing documentation:
 2. Verify healthcheck commands match the deployed compose (not theoretical).
 3. Verify non-deployed services are in a "Next Steps" / "Future Phases" section.
 4. Verify port mappings, networks, memory limits, and build contexts match the compose file.
+
+## Walk test (framework's own routing layer)
+
+When the work is on the framework itself (building, restructuring, or renaming files in the framework repo), validate the routing layer with the walk test in `framework/11-walk-test.md`: an agent with no memory must orient, route, act, and report status from the files alone. If it cannot, fix the structure, not the explanation. Run it after any change that moves or renames a file another file points at, and check the move-safety gate in `framework/09-canonical-sources.md` before the move.
