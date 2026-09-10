@@ -7,6 +7,8 @@ description: "Entry-point quality gate for AI-assist work. Classifies the reques
 
 This skill is the front door for AI-assist work. It decides what kind of work is being asked, establishes the project foundation when needed, and triggers only the quality gates that the change demands. It is not a delivery pipeline; it is the entry point and the quality gate.
 
+**Canonical sources:** the mode classification, project state assessment, four-gate table, and change-driven triggers are documented in the framework repo at `framework/01-quality-gates.md`; the test ownership split, test-runner decision, and callflow verification live in `framework/05-testing.md`. This skill is the executable procedure and carries the tables it needs to run, but the framework docs are the source of truth for the shared facts. Update those files, not the skill, when a shared fact changes.
+
 ## When to Use
 
 Use this skill at the start of any AI-assist task:
