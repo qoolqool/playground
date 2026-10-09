@@ -161,9 +161,15 @@ RUN set -eux; \
     starship --version
 
 
-# --- PYTHON -----------------------------------------------------------
-RUN pip3 install --break-system-packages --no-cache-dir requests rich click mcp-atlassian pipx && \
+# Create a virtualenv
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Now install everything inside the venv (no --break-system-packages needed)
+RUN pip install --no-cache-dir \
+        requests rich click mcp-atlassian pipx && \
     pipx ensurepath
+
 
 # --- USER -------------------------------------------------------------
 RUN useradd -u 502 -m -s /bin/bash tool && \
