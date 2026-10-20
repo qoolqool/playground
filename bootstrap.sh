@@ -19,7 +19,7 @@ fi
 DOCKER="${CONTAINER_CMD:-docker}"
 
 # ---------- configuration ----------
-CONTAINER_NAME="playground-tooling"
+CONTAINER_NAME="scraper-tooling"
 PROJECTS_FILE="$SCRIPT_DIR/projects.yml"
 
 # ---------- yq / awk YAML reader ----------
@@ -222,7 +222,7 @@ fi
 NEEDS_BUILD=false
 if [ "$FORCE_REBUILD" = true ]; then
     NEEDS_BUILD=true
-elif ! $DOCKER image inspect playground-tooling:latest &>/dev/null; then
+elif ! $DOCKER image inspect scraper-tooling:latest &>/dev/null; then
     NEEDS_BUILD=true
 fi
 
@@ -317,7 +317,7 @@ if ! $DOCKER ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         -e DOCKER_HOST="$DOCKER_HOST_ENV" \
         -e TZ=Asia/Kuala_Lumpur \
         "${ADD_HOST_FLAGS[@]}" \
-        playground-tooling:latest \
+        scraper-tooling:latest \
         bash -c '
             if [ -f /project/setenv.sh ]; then
                 source /project/setenv.sh
@@ -344,16 +344,6 @@ else
         $DOCKER start "$CONTAINER_NAME" >/dev/null
     fi
 fi
-
-# ---------- KB Obs containers ----------
-# The obs dashboard (web UI, port 8080) and the obs-sampler (embed-memory
-# metrics) run as their own docker-compose services (`obs` / `obs-sampler`).
-# They are NOT part of the tooling container, so bootstrap.sh must start them
-# explicitly here. The sampler needs the Docker socket (mounted in compose).
-echo ""
-echo "Starting KB obs containers (dashboard + sampler)..."
-$DOCKER compose up -d obs obs-sampler \
-  || echo "⚠ obs containers failed to start (non-fatal)"
 
 # Enter the container (with retry to handle race condition on startup)
 echo ""
