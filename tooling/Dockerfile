@@ -220,16 +220,51 @@ RUN mkdir -p /home/tool/.npm-global && \
     chown -R tool:tool /home/tool/.npm-global
 
 # 3. Now global installs will work without sudo/root
-# Install Pi coding agent globally
-# Use the updated namespace
+# Install Pi with its official installer rather than `npm install -g`. The
+# installer uses the managed, dependency-pinned layout:
+#   ~/.pi/agent/install/releases/<version>/  npm-shrinkwrap-locked release
+#   ~/.pi/agent/install/current-version      active release pointer
+#   ~/.pi/agent/bin/pi                       launcher (reads the pointer)
+#   ~/.local/bin/pi                          symlink on PATH
+# so transitive deps are pinned by pi's npm-shrinkwrap.json and upgrades go
+# through `pi update` instead of npm. The agent dir is unchanged, so
+# ~/.pi/agent/{extensions,npm,agents,AGENTS.md} and the extension installs
+# below still resolve as before.
+# No TTY during the build, so the installer takes its non-interactive default
+# (fresh install / reinstall) and needs no piped input. Fetched to a file first
+# so a curl failure fails the layer (a plain `curl ... | sh` pipe has no
+# pipefail under /bin/sh).
 # CACHEBUST must be referenced by the RUN below, otherwise BuildKit does not
 # include it in the layer's cache key and `bootstrap -f` won't actually
 # reinstall pi / the extensions (the stale-version bug).
 ARG CACHEBUST=1
-RUN echo "cachebust: $CACHEBUST" && npm install -g @earendil-works/pi-coding-agent
+RUN echo "cachebust: $CACHEBUST" && \
+    curl -fsSL https://pi.dev/install.sh -o /tmp/pi-install.sh && \
+    sh /tmp/pi-install.sh && \
+    rm -f /tmp/pi-install.sh && \
+    pi --version && \
+    echo "managed pi release: $(cat /home/tool/.pi/agent/install/current-version) at $(readlink -f "$(command -v pi)")"
 
 # Install local distill-rag-bridge from your copied local directory
 RUN pi install /home/tool/.local/share/skill-marketplace/plugins/distill-rag-bridge || true
+
+# --- SKILLS FROM THE MARKETPLACE (skills.sh) ---------------------------
+# Third-party skills are pulled from their upstream repos at build time
+# instead of being vendored into git (archify alone is ~18MB of renderer and
+# example files). The `skills` CLI knows pi's global skill directory
+# (~/.pi/agent/skills), so --agent pi puts them where pi discovers them.
+# --copy is required: the default symlink would point into an npm cache that
+# the cleanup step below deletes.
+# SKILLS_CLI_VERSION pins the installer, not the skills. A layer rebuild takes
+# whatever upstream HEAD serves, which is the point of not vendoring; bump
+# CACHEBUST to re-pull without waiting for an upstream change.
+ARG SKILLS_CLI_VERSION=1.7.0
+RUN echo "cachebust: $CACHEBUST" && \
+    npx -y "skills@${SKILLS_CLI_VERSION}" add tt-a1i/archify \
+        --skill archify --agent pi --global --copy --yes && \
+    npx -y "skills@${SKILLS_CLI_VERSION}" add juliusbrussee/caveman \
+        --skill caveman --agent pi --global --copy --yes && \
+    ls -1 /home/tool/.pi/agent/skills
 
 # Install pi-hermes-memory (persistent memory + session search + secret scanning)
 RUN pi install npm:pi-hermes-memory || true

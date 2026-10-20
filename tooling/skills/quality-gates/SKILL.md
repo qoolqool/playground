@@ -7,6 +7,8 @@ description: "Entry-point quality gate for AI-assist work. Classifies the reques
 
 This skill is the front door for AI-assist work. It decides what kind of work is being asked, establishes the project foundation when needed, and triggers only the quality gates that the change demands. It is not a delivery pipeline; it is the entry point and the quality gate.
 
+**Canonical sources:** the mode classification, project state assessment, four-gate table, and change-driven triggers are documented in the framework repo at `framework/04-quality-gates.md`; the test ownership split, test-runner decision, and callflow verification live in `framework/08-testing.md`. This skill is the executable procedure and carries the tables it needs to run, but the framework docs are the source of truth for the shared facts. Update those files, not the skill, when a shared fact changes.
+
 ## When to Use
 
 Use this skill at the start of any AI-assist task:
@@ -264,3 +266,7 @@ After syncing documentation:
 2. Verify healthcheck commands match the deployed compose (not theoretical).
 3. Verify non-deployed services are in a "Next Steps" / "Future Phases" section.
 4. Verify port mappings, networks, memory limits, and build contexts match the compose file.
+
+## Walk test (framework's own routing layer)
+
+When the work is on the framework itself (building, restructuring, or renaming files in the framework repo), validate the routing layer with the walk test in `framework/03-walk-test.md`: an agent with no memory must orient, route, act, and report status from the files alone. If it cannot, fix the structure, not the explanation. Run it after any change that moves or renames a file another file points at, and check the move-safety gate in `framework/01-canonical-sources.md` before the move.
