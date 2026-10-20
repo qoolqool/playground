@@ -30,11 +30,13 @@
 //
 // Environment:
 //   LITEPARSE_MODULE   Explicit path to @llamaindex/liteparse dist/lib.js
-//                      (auto-resolved otherwise).
+//                      (auto-resolved from the pi agent directory otherwise).
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const CHUNK = 1000; // hard max pages per LiteParse call
 const PAGE_COUNT_PROBE_LIMIT = 100_000;
@@ -43,13 +45,22 @@ const PAGE_COUNT_PROBE_LIMIT = 100_000;
 // Resolve the LiteParse engine
 // ---------------------------------------------------------------------------
 async function loadLiteParse() {
+  // pi installs extension packages under the agent directory's npm tree, which
+  // is not on this script's module resolution path, so name it explicitly. The
+  // agent directory follows PI_CODING_AGENT_DIR when set, ~/.pi/agent otherwise.
+  const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
   const candidates = [
     process.env.LITEPARSE_MODULE,
     '@llamaindex/liteparse',
+    join(agentDir, 'npm', 'node_modules', '@llamaindex', 'liteparse', 'dist', 'lib.js'),
   ].filter(Boolean);
   for (const candidate of candidates) {
     try {
-      const mod = await import(candidate);
+      // Bare specifiers go through normal resolution; filesystem paths need a
+      // file URL to survive spaces and Windows drive letters.
+      const isPath = candidate.startsWith('.') || candidate.startsWith('/') || /^[A-Za-z]:[\\/]/.test(candidate);
+      const target = isPath ? pathToFileURL(candidate).href : candidate;
+      const mod = await import(target);
       if (mod.LiteParse) return mod.LiteParse;
     } catch {
       /* try next */

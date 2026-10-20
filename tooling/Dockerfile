@@ -248,6 +248,24 @@ RUN echo "cachebust: $CACHEBUST" && \
 # Install local distill-rag-bridge from your copied local directory
 RUN pi install /home/tool/.local/share/skill-marketplace/plugins/distill-rag-bridge || true
 
+# --- SKILLS FROM THE MARKETPLACE (skills.sh) ---------------------------
+# Third-party skills are pulled from their upstream repos at build time
+# instead of being vendored into git (archify alone is ~18MB of renderer and
+# example files). The `skills` CLI knows pi's global skill directory
+# (~/.pi/agent/skills), so --agent pi puts them where pi discovers them.
+# --copy is required: the default symlink would point into an npm cache that
+# the cleanup step below deletes.
+# SKILLS_CLI_VERSION pins the installer, not the skills. A layer rebuild takes
+# whatever upstream HEAD serves, which is the point of not vendoring; bump
+# CACHEBUST to re-pull without waiting for an upstream change.
+ARG SKILLS_CLI_VERSION=1.7.0
+RUN echo "cachebust: $CACHEBUST" && \
+    npx -y "skills@${SKILLS_CLI_VERSION}" add tt-a1i/archify \
+        --skill archify --agent pi --global --copy --yes && \
+    npx -y "skills@${SKILLS_CLI_VERSION}" add juliusbrussee/caveman \
+        --skill caveman --agent pi --global --copy --yes && \
+    ls -1 /home/tool/.pi/agent/skills
+
 # Install pi-hermes-memory (persistent memory + session search + secret scanning)
 RUN pi install npm:pi-hermes-memory || true
 
