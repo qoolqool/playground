@@ -162,7 +162,13 @@ RUN set -eux; \
 
 
 # --- PYTHON -----------------------------------------------------------
-RUN pip3 install --break-system-packages --no-cache-dir requests rich click mcp-atlassian pipx && \
+# Debian ships `packaging` via apt with no RECORD file, so pip cannot
+# uninstall/upgrade it when a dependency (pipx / atlassian-python-api)
+# needs a different version. `--ignore-installed` installs a pip-managed
+# copy over it (no uninstall attempt, so no RECORD error) and gives it a
+# RECORD file so later installs can upgrade it cleanly.
+RUN pip3 install --break-system-packages --no-cache-dir --ignore-installed packaging && \
+    pip3 install --break-system-packages --no-cache-dir requests rich click mcp-atlassian pipx && \
     pipx ensurepath
 
 # --- USER -------------------------------------------------------------
@@ -214,13 +220,30 @@ RUN mkdir -p /home/tool/.npm-global && \
     chown -R tool:tool /home/tool/.npm-global
 
 # 3. Now global installs will work without sudo/root
-# Install Pi coding agent globally
-# Use the updated namespace
+# Install Pi with its official installer rather than `npm install -g`. The
+# installer uses the managed, dependency-pinned layout:
+#   ~/.pi/agent/install/releases/<version>/  npm-shrinkwrap-locked release
+#   ~/.pi/agent/install/current-version      active release pointer
+#   ~/.pi/agent/bin/pi                       launcher (reads the pointer)
+#   ~/.local/bin/pi                          symlink on PATH
+# so transitive deps are pinned by pi's npm-shrinkwrap.json and upgrades go
+# through `pi update` instead of npm. The agent dir is unchanged, so
+# ~/.pi/agent/{extensions,npm,agents,AGENTS.md} and the extension installs
+# below still resolve as before.
+# No TTY during the build, so the installer takes its non-interactive default
+# (fresh install / reinstall) and needs no piped input. Fetched to a file first
+# so a curl failure fails the layer (a plain `curl ... | sh` pipe has no
+# pipefail under /bin/sh).
 # CACHEBUST must be referenced by the RUN below, otherwise BuildKit does not
 # include it in the layer's cache key and `bootstrap -f` won't actually
 # reinstall pi / the extensions (the stale-version bug).
 ARG CACHEBUST=1
-RUN echo "cachebust: $CACHEBUST" && npm install -g @earendil-works/pi-coding-agent
+RUN echo "cachebust: $CACHEBUST" && \
+    curl -fsSL https://pi.dev/install.sh -o /tmp/pi-install.sh && \
+    sh /tmp/pi-install.sh && \
+    rm -f /tmp/pi-install.sh && \
+    pi --version && \
+    echo "managed pi release: $(cat /home/tool/.pi/agent/install/current-version) at $(readlink -f "$(command -v pi)")"
 
 # Install local distill-rag-bridge from your copied local directory
 RUN pi install /home/tool/.local/share/skill-marketplace/plugins/distill-rag-bridge || true
